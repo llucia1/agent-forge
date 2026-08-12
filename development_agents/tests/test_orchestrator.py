@@ -1,17 +1,20 @@
 import unittest
 from unittest.mock import Mock, call
 
+from core.contracts.messaging import TaskPublisher
+from core.contracts.repositories import ProjectCreator, TaskCreator
 from core.models.project import Project
+from core.models.task import AgentRole
 from core.orchestration.orchestrator import Orchestrator
 
 
 class OrchestratorTaskPublishingTests(unittest.TestCase):
     def test_create_project_persists_technical_definition(self):
-        project_repository = Mock()
+        project_creator = Mock(spec=ProjectCreator)
         orchestrator = Orchestrator(
-            project_repository=project_repository,
-            task_repository=Mock(),
-            task_publisher=Mock(),
+            project_creator=project_creator,
+            task_creator=Mock(spec=TaskCreator),
+            task_publisher=Mock(spec=TaskPublisher),
         )
         technical_definition = {
             "backend_stack": {"language": "Python"},
@@ -28,7 +31,7 @@ class OrchestratorTaskPublishingTests(unittest.TestCase):
             **technical_definition,
         )
 
-        self.assertIs(project_repository.create.call_args.args[0], project)
+        self.assertIs(project_creator.create.call_args.args[0], project)
         self.assertEqual(project.backend_stack, {"language": "Python"})
         self.assertEqual(project.backend_architecture, {"style": "layered"})
         self.assertEqual(project.frontend_stack, {"framework": "React"})
@@ -47,13 +50,13 @@ class OrchestratorTaskPublishingTests(unittest.TestCase):
 
     def test_create_task_persists_before_publishing(self):
         operations = Mock()
-        task_repository = Mock()
-        task_publisher = Mock()
-        task_repository.create.side_effect = operations.persist
+        task_creator = Mock(spec=TaskCreator)
+        task_publisher = Mock(spec=TaskPublisher)
+        task_creator.create.side_effect = operations.persist
         task_publisher.publish.side_effect = operations.publish
         orchestrator = Orchestrator(
-            project_repository=Mock(),
-            task_repository=task_repository,
+            project_creator=Mock(spec=ProjectCreator),
+            task_creator=task_creator,
             task_publisher=task_publisher,
         )
 
@@ -61,23 +64,23 @@ class OrchestratorTaskPublishingTests(unittest.TestCase):
             project=Project(name="AgentForge", description="Test project"),
             title="Design architecture",
             description="Define the service boundaries",
-            agent="architect",
+            agent=AgentRole.ARCHITECT,
         )
 
         self.assertEqual(
             operations.mock_calls,
             [call.persist(task), call.publish(task)],
         )
-        self.assertIs(task_repository.create.call_args.args[0], task)
+        self.assertIs(task_creator.create.call_args.args[0], task)
         self.assertIs(task_publisher.publish.call_args.args[0], task)
 
     def test_create_task_does_not_publish_when_persistence_fails(self):
-        task_repository = Mock()
-        task_repository.create.side_effect = RuntimeError("database unavailable")
-        task_publisher = Mock()
+        task_creator = Mock(spec=TaskCreator)
+        task_creator.create.side_effect = RuntimeError("database unavailable")
+        task_publisher = Mock(spec=TaskPublisher)
         orchestrator = Orchestrator(
-            project_repository=Mock(),
-            task_repository=task_repository,
+            project_creator=Mock(spec=ProjectCreator),
+            task_creator=task_creator,
             task_publisher=task_publisher,
         )
 
@@ -89,7 +92,7 @@ class OrchestratorTaskPublishingTests(unittest.TestCase):
                 ),
                 title="Design architecture",
                 description="Define the service boundaries",
-                agent="architect",
+                agent=AgentRole.ARCHITECT,
             )
 
         task_publisher.publish.assert_not_called()

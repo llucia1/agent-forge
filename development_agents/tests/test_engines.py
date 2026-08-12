@@ -5,22 +5,26 @@ from urllib.error import HTTPError
 from unittest.mock import MagicMock, Mock
 from uuid import UUID
 
-from core.engines import (
+from core.contracts.configuration import LiteLLMSettings
+from core.contracts.engines import (
     AgentEngine,
-    ClaudeEngine,
-    CodexEngine,
     EngineConfigurationError,
     EngineHTTPError,
     EngineResponseError,
-    EngineResolver,
     EngineResult,
     EngineTimeoutError,
-    LiteLLMEngine,
-    ModelConfigurationError,
-    ModelResolver,
 )
+from core.contracts.model_selection import (
+    ModelConfigurationError,
+    ModelSelector,
+)
+from core.engines.model_resolver import ModelResolver
+from core.engines.resolver import EngineResolver
+from core.infrastructure.engines.claude import ClaudeEngine
+from core.infrastructure.engines.codex import CodexEngine
+from core.infrastructure.engines.litellm import LiteLLMEngine
 from core.models.project import Project
-from core.models.task import Task
+from core.models.task import AgentRole, Task
 
 
 class EngineStubTests(unittest.TestCase):
@@ -30,7 +34,11 @@ class EngineStubTests(unittest.TestCase):
             project_id=self.project.id,
             title="Define architecture",
             description="Define the application architecture",
-            agent="architect",
+            agent=AgentRole.ARCHITECT,
+        )
+        self.litellm_settings = LiteLLMSettings(
+            base_url="http://litellm:4000",
+            api_key="gateway-key",
         )
 
     def test_codex_stub_returns_engine_result(self):
@@ -50,8 +58,8 @@ class EngineStubTests(unittest.TestCase):
         self.assertIn("not implemented", result.output)
 
     def test_litellm_posts_task_project_and_context_to_proxy(self):
-        model_resolver = Mock(spec=ModelResolver)
-        model_resolver.resolve.return_value = "architecture-primary"
+        model_selector = Mock(spec=ModelSelector)
+        model_selector.resolve.return_value = "architecture-primary"
         response = MagicMock()
         response.status = 200
         response.read.return_value = json.dumps(
@@ -71,9 +79,8 @@ class EngineStubTests(unittest.TestCase):
             "previous_decisions": ["Use PostgreSQL"],
         }
         engine = LiteLLMEngine(
-            model_resolver,
-            base_url="http://litellm:4000",
-            api_key="gateway-key",
+            model_selector,
+            self.litellm_settings,
             http_open=http_open,
         )
 
@@ -91,7 +98,7 @@ class EngineStubTests(unittest.TestCase):
             },
         )
         self.assertEqual(result.output, "Architecture output")
-        model_resolver.resolve.assert_called_once_with(
+        model_selector.resolve.assert_called_once_with(
             self.task,
             self.project,
         )
@@ -116,36 +123,31 @@ class EngineStubTests(unittest.TestCase):
             180.0,
         )
 
-    def test_litellm_loads_only_gateway_configuration_from_environment(self):
-        model_resolver = Mock(spec=ModelResolver)
-        engine = LiteLLMEngine.from_environment(
-            model_resolver,
-            {
-                "LITELLM_BASE_URL": "http://litellm:4000",
-                "LITELLM_API_KEY": "gateway-key",
-                "OPENAI_API_KEY": "must-not-be-read",
-            },
+    def test_litellm_uses_only_injected_gateway_settings(self):
+        engine = LiteLLMEngine(
+            Mock(spec=ModelSelector),
+            self.litellm_settings,
         )
 
         self.assertEqual(engine.base_url, "http://litellm:4000")
         self.assertEqual(engine.api_key, "gateway-key")
         self.assertEqual(engine.timeout_seconds, 180.0)
 
-    def test_litellm_loads_timeout_from_environment(self):
-        engine = LiteLLMEngine.from_environment(
-            Mock(spec=ModelResolver),
-            {
-                "LITELLM_BASE_URL": "http://litellm:4000",
-                "LITELLM_API_KEY": "gateway-key",
-                "LITELLM_TIMEOUT_SECONDS": "240",
-            },
+    def test_litellm_uses_injected_timeout(self):
+        engine = LiteLLMEngine(
+            Mock(spec=ModelSelector),
+            LiteLLMSettings(
+                base_url="http://litellm:4000",
+                api_key="gateway-key",
+                timeout_seconds=240.0,
+            ),
         )
 
         self.assertEqual(engine.timeout_seconds, 240.0)
 
     def test_litellm_translates_http_error(self):
-        model_resolver = Mock(spec=ModelResolver)
-        model_resolver.resolve.return_value = "general-default"
+        model_selector = Mock(spec=ModelSelector)
+        model_selector.resolve.return_value = "general-default"
         http_open = Mock(
             side_effect=HTTPError(
                 "http://litellm:4000/v1/chat/completions",
@@ -156,9 +158,8 @@ class EngineStubTests(unittest.TestCase):
             )
         )
         engine = LiteLLMEngine(
-            model_resolver,
-            "http://litellm:4000",
-            "gateway-key",
+            model_selector,
+            self.litellm_settings,
             http_open=http_open,
         )
 
@@ -166,13 +167,12 @@ class EngineStubTests(unittest.TestCase):
             engine.run(self.task, self.project)
 
     def test_litellm_translates_timeout(self):
-        model_resolver = Mock(spec=ModelResolver)
-        model_resolver.resolve.return_value = "general-default"
+        model_selector = Mock(spec=ModelSelector)
+        model_selector.resolve.return_value = "general-default"
         http_open = Mock(side_effect=TimeoutError("timed out"))
         engine = LiteLLMEngine(
-            model_resolver,
-            "http://litellm:4000",
-            "gateway-key",
+            model_selector,
+            self.litellm_settings,
             http_open=http_open,
         )
 
@@ -183,16 +183,15 @@ class EngineStubTests(unittest.TestCase):
             engine.run(self.task, self.project)
 
     def test_litellm_translates_invalid_response(self):
-        model_resolver = Mock(spec=ModelResolver)
-        model_resolver.resolve.return_value = "general-default"
+        model_selector = Mock(spec=ModelSelector)
+        model_selector.resolve.return_value = "general-default"
         response = MagicMock()
         response.status = 200
         response.read.return_value = b'{"choices": []}'
         response.__enter__.return_value = response
         engine = LiteLLMEngine(
-            model_resolver,
-            "http://litellm:4000",
-            "gateway-key",
+            model_selector,
+            self.litellm_settings,
             http_open=Mock(return_value=response),
         )
 
@@ -215,7 +214,7 @@ class ModelResolverTests(unittest.TestCase):
             project_id=self.project_id,
             title="Define architecture",
             description="Define the application architecture",
-            agent="architect",
+            agent=AgentRole.ARCHITECT,
         )
 
     def test_project_model_has_highest_priority(self):
@@ -227,6 +226,7 @@ class ModelResolverTests(unittest.TestCase):
 
         result = resolver.resolve(self.task, self.project)
 
+        self.assertIsInstance(resolver, ModelSelector)
         self.assertEqual(result, "project-specialized")
 
     def test_agent_model_has_priority_over_default(self):
@@ -268,7 +268,7 @@ class EngineResolverTests(unittest.TestCase):
             description="Agent platform",
         )
 
-    def _task(self, agent="architect"):
+    def _task(self, agent=AgentRole.ARCHITECT):
         return Task(
             project_id=self.project_id,
             title="Define architecture",
@@ -320,7 +320,7 @@ class EngineResolverTests(unittest.TestCase):
         self.default_engine.run.assert_not_called()
 
     def test_uses_default_engine_without_overrides(self):
-        task = self._task(agent="qa")
+        task = self._task(agent=AgentRole.QA)
         resolver = EngineResolver(
             engines={"default": self.default_engine},
             default_engine="default",
@@ -344,7 +344,7 @@ class EngineResolverTests(unittest.TestCase):
             EngineConfigurationError,
             "Engine is not registered: missing",
         ):
-            resolver.run(self._task(agent="qa"), self.project)
+            resolver.run(self._task(agent=AgentRole.QA), self.project)
 
 
 if __name__ == "__main__":

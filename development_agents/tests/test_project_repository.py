@@ -2,11 +2,23 @@ import unittest
 from unittest.mock import call, patch
 from uuid import UUID
 
-from core.infrastructure.repositories.project_repository import ProjectRepository
+from core.contracts.configuration import DatabaseSettings
+from core.contracts.repositories import ProjectCreator, ProjectReader
+from core.infrastructure.repositories.project_repository import (
+    PostgresProjectRepository,
+)
 from core.models.project import Project
 
 
 class ProjectRepositoryTests(unittest.TestCase):
+    settings = DatabaseSettings(
+        host="postgres",
+        port="5432",
+        database="agent_forge",
+        user="agent_forge",
+        password="database-key",
+    )
+
     @patch(
         "core.infrastructure.repositories.project_repository.Jsonb",
         side_effect=lambda value: value,
@@ -30,7 +42,10 @@ class ProjectRepositoryTests(unittest.TestCase):
         connection = connect.return_value.__enter__.return_value
         cursor = connection.cursor.return_value.__enter__.return_value
 
-        ProjectRepository().create(project)
+        repository = PostgresProjectRepository(self.settings)
+        self.assertIsInstance(repository, ProjectCreator)
+        self.assertIsInstance(repository, ProjectReader)
+        repository.create(project)
 
         statement, parameters = cursor.execute.call_args.args
         normalized_statement = " ".join(statement.split())
@@ -88,7 +103,9 @@ class ProjectRepositoryTests(unittest.TestCase):
             ["Use Python 3.12"],
         )
 
-        project = ProjectRepository().find_by_id(project_id)
+        project = PostgresProjectRepository(self.settings).find_by_id(
+            project_id
+        )
 
         statement, parameters = cursor.execute.call_args.args
         normalized_statement = " ".join(statement.split())
@@ -122,7 +139,9 @@ class ProjectRepositoryTests(unittest.TestCase):
         cursor = connection.cursor.return_value.__enter__.return_value
         cursor.fetchone.return_value = None
 
-        project = ProjectRepository().find_by_id(project_id)
+        project = PostgresProjectRepository(self.settings).find_by_id(
+            project_id
+        )
 
         self.assertIsNone(project)
 

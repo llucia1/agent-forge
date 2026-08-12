@@ -1,33 +1,33 @@
-from core.engines import AgentEngine, EngineResult
-from core.infrastructure.repositories.project_repository import ProjectRepository
-from core.infrastructure.repositories.task_repository import TaskRepository
-from core.memory import ContextProvider
+from core.contracts.context import ContextProvider
+from core.contracts.engines import AgentEngine, EngineResult
+from core.contracts.messaging import TaskHandler
+from core.contracts.repositories import ProjectReader, TaskStatusWriter
 from core.models.project import Project
-from core.models.task import Task
+from core.models.task import Task, TaskStatus
 
 
 class ProjectNotFoundError(LookupError):
     """Raised when a task references a project that does not exist."""
 
 
-class ArchitectAgent:
+class ArchitectAgent(TaskHandler):
     def __init__(
         self,
-        task_repository: TaskRepository,
-        project_repository: ProjectRepository,
+        task_status_writer: TaskStatusWriter,
+        project_reader: ProjectReader,
         engine: AgentEngine,
         context_provider: ContextProvider,
     ):
-        self.task_repository = task_repository
-        self.project_repository = project_repository
+        self.task_status_writer = task_status_writer
+        self.project_reader = project_reader
         self.engine = engine
         self.context_provider = context_provider
 
     def handle(self, task: Task) -> None:
-        self._update_status(task, "in_progress")
+        self._update_status(task, TaskStatus.IN_PROGRESS)
 
         try:
-            project = self.project_repository.find_by_id(task.project_id)
+            project = self.project_reader.find_by_id(task.project_id)
 
             if project is None:
                 raise ProjectNotFoundError(
@@ -35,10 +35,10 @@ class ArchitectAgent:
                 )
 
             self.process(task, project)
-            self._update_status(task, "completed")
+            self._update_status(task, TaskStatus.COMPLETED)
         except Exception:
             try:
-                self._update_status(task, "failed")
+                self._update_status(task, TaskStatus.FAILED)
             except Exception:
                 pass
 
@@ -52,6 +52,6 @@ class ArchitectAgent:
             context=context,
         )
 
-    def _update_status(self, task: Task, status: str) -> None:
-        self.task_repository.update_status(task.id, status)
+    def _update_status(self, task: Task, status: TaskStatus) -> None:
+        self.task_status_writer.update_status(task.id, status)
         task.status = status

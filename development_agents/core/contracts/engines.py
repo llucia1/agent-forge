@@ -2,6 +2,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any
 
+from core.contracts.context import AgentContext
 from core.models.project import Project
 from core.models.task import Task
 
@@ -39,6 +40,6 @@ class AgentEngine(ABC):
         self,
         task: Task,
         project: Project,
-        context: dict[str, Any] | None = None,
+        context: AgentContext | None = None,
     ) -> EngineResult:
         """Process a task using context owned by AgentForge."""

@@ -1,7 +1,7 @@
-from typing import Any
 from uuid import UUID
 
-from core.engines.base import (
+from core.contracts.context import AgentContext
+from core.contracts.engines import (
     AgentEngine,
     EngineConfigurationError,
     EngineResult,
@@ -27,7 +27,7 @@ class EngineResolver(AgentEngine):
         engine_name = self.engines_by_project.get(project.id)
 
         if engine_name is None:
-            engine_name = self.engines_by_agent.get(task.agent)
+            engine_name = self.engines_by_agent.get(str(task.agent))
 
         if engine_name is None:
             engine_name = self.default_engine
@@ -43,7 +43,7 @@ class EngineResolver(AgentEngine):
         self,
         task: Task,
         project: Project,
-        context: dict[str, Any] | None = None,
+        context: AgentContext | None = None,
     ) -> EngineResult:
         engine = self.resolve(task, project)
         return engine.run(task, project, context)

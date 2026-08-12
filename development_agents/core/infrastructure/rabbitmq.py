@@ -1,29 +1,19 @@
 import json
-import os
-from collections.abc import Callable
 from uuid import UUID
 
 import pika
 
-from core.models.task import Task
-
-
-TASK_QUEUES = {
-    "architect": "tasks.architect",
-    "backend": "tasks.backend",
-    "frontend": "tasks.frontend",
-    "reviewer": "tasks.reviewer",
-    "qa": "tasks.qa",
-    "devops": "tasks.devops",
-}
+from core.contracts.configuration import RabbitMQSettings
+from core.contracts.messaging import TaskConsumer, TaskHandler, TaskPublisher
+from core.models.task import AgentRole, Task, TaskStatus
 
 
 class UnsupportedAgentError(ValueError):
     """Raised when a task targets an agent without a configured queue."""
 
 
-def _get_task_queue(agent: str) -> str:
-    queue = TASK_QUEUES.get(agent)
+def _get_task_queue(settings: RabbitMQSettings, agent: AgentRole) -> str:
+    queue = settings.task_queues.get(agent)
 
     if queue is None:
         raise UnsupportedAgentError(f"Unsupported task agent: {agent}")
@@ -31,32 +21,35 @@ def _get_task_queue(agent: str) -> str:
     return queue
 
 
-def _create_connection() -> pika.BlockingConnection:
+def _create_connection(settings: RabbitMQSettings) -> pika.BlockingConnection:
     credentials = pika.PlainCredentials(
-        os.getenv("RABBITMQ_USER"),
-        os.getenv("RABBITMQ_PASSWORD"),
+        settings.user,
+        settings.password,
     )
 
     return pika.BlockingConnection(
         pika.ConnectionParameters(
-            host=os.getenv("RABBITMQ_HOST"),
-            port=int(os.getenv("RABBITMQ_PORT", "5672")),
+            host=settings.host,
+            port=settings.port,
             credentials=credentials,
         )
     )
 
 
-def check_rabbitmq() -> bool:
-    connection = _create_connection()
+def check_rabbitmq(settings: RabbitMQSettings) -> bool:
+    connection = _create_connection(settings)
 
     connection.close()
 
     return True
 
 
-class TaskPublisher:
+class RabbitMQTaskPublisher(TaskPublisher):
+    def __init__(self, settings: RabbitMQSettings):
+        self.settings = settings
+
     def publish(self, task: Task) -> None:
-        queue = _get_task_queue(task.agent)
+        queue = _get_task_queue(self.settings, task.agent)
 
         message = json.dumps(
             {
@@ -64,12 +57,12 @@ class TaskPublisher:
                 "project_id": str(task.project_id),
                 "title": task.title,
                 "description": task.description,
-                "agent": task.agent,
-                "status": task.status,
+                "agent": str(task.agent),
+                "status": str(task.status),
             }
         ).encode("utf-8")
 
-        connection = _create_connection()
+        connection = _create_connection(self.settings)
 
         try:
             channel = connection.channel()
@@ -87,14 +80,17 @@ class TaskPublisher:
             connection.close()
 
 
-class TaskConsumer:
+class RabbitMQTaskConsumer(TaskConsumer):
+    def __init__(self, settings: RabbitMQSettings):
+        self.settings = settings
+
     def consume(
         self,
-        agent: str,
-        handler: Callable[[Task], None],
+        agent: AgentRole,
+        handler: TaskHandler,
     ) -> None:
-        queue = _get_task_queue(agent)
-        connection = _create_connection()
+        queue = _get_task_queue(self.settings, agent)
+        connection = _create_connection(self.settings)
 
         try:
             channel = connection.channel()
@@ -104,7 +100,7 @@ class TaskConsumer:
             def on_message(channel, method, properties, body):
                 try:
                     task = self._deserialize_task(body)
-                    handler(task)
+                    handler.handle(task)
                 except Exception:
                     channel.basic_nack(
                         delivery_tag=method.delivery_tag,
@@ -134,6 +130,6 @@ class TaskConsumer:
             project_id=UUID(message["project_id"]),
             title=message["title"],
             description=message["description"],
-            agent=message["agent"],
-            status=message["status"],
+            agent=AgentRole(message["agent"]),
+            status=TaskStatus(message["status"]),
         )

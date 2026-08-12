@@ -1,14 +1,14 @@
 from uuid import UUID
 
+from core.contracts.model_selection import (
+    ModelConfigurationError,
+    ModelSelector,
+)
 from core.models.project import Project
 from core.models.task import Task
 
 
-class ModelConfigurationError(LookupError):
-    """Raised when model selection does not resolve a valid alias."""
-
-
-class ModelResolver:
+class ModelResolver(ModelSelector):
     def __init__(
         self,
         default_model: str,
@@ -23,7 +23,7 @@ class ModelResolver:
         model_alias = self.models_by_project.get(project.id)
 
         if model_alias is None:
-            model_alias = self.models_by_agent.get(task.agent)
+            model_alias = self.models_by_agent.get(str(task.agent))
 
         if model_alias is None:
             model_alias = self.default_model

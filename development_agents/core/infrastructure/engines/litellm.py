@@ -1,13 +1,14 @@
 import json
-import os
 import socket
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from dataclasses import asdict
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from core.engines.base import (
+from core.contracts.configuration import LiteLLMSettings
+from core.contracts.context import AgentContext
+from core.contracts.engines import (
     AgentEngine,
     EngineConfigurationError,
     EngineHTTPError,
@@ -15,7 +16,7 @@ from core.engines.base import (
     EngineResult,
     EngineTimeoutError,
 )
-from core.engines.model_resolver import ModelResolver
+from core.contracts.model_selection import ModelSelector
 from core.models.project import Project
 from core.models.task import Task
 
@@ -23,56 +24,32 @@ from core.models.task import Task
 class LiteLLMEngine(AgentEngine):
     def __init__(
         self,
-        model_resolver: ModelResolver,
-        base_url: str,
-        api_key: str,
-        timeout_seconds: float = 180.0,
+        model_selector: ModelSelector,
+        settings: LiteLLMSettings,
         http_open: Callable[..., Any] | None = None,
     ):
-        if not base_url.strip():
+        if not settings.base_url.strip():
             raise EngineConfigurationError(
                 "LITELLM_BASE_URL must not be empty"
             )
-        if not api_key.strip():
+        if not settings.api_key.strip():
             raise EngineConfigurationError(
                 "LITELLM_API_KEY must not be empty"
             )
 
-        self.model_resolver = model_resolver
-        self.base_url = base_url.rstrip("/")
-        self.api_key = api_key
-        self.timeout_seconds = timeout_seconds
+        self.model_selector = model_selector
+        self.base_url = settings.base_url.rstrip("/")
+        self.api_key = settings.api_key
+        self.timeout_seconds = settings.timeout_seconds
         self.http_open = http_open or urlopen
-
-    @classmethod
-    def from_environment(
-        cls,
-        model_resolver: ModelResolver,
-        environ: Mapping[str, str] | None = None,
-        **kwargs: Any,
-    ) -> "LiteLLMEngine":
-        source = os.environ if environ is None else environ
-        if "timeout_seconds" in kwargs:
-            timeout_seconds = kwargs.pop("timeout_seconds")
-        else:
-            timeout_seconds = float(
-                source.get("LITELLM_TIMEOUT_SECONDS", "180")
-            )
-        return cls(
-            model_resolver=model_resolver,
-            base_url=source.get("LITELLM_BASE_URL", ""),
-            api_key=source.get("LITELLM_API_KEY", ""),
-            timeout_seconds=timeout_seconds,
-            **kwargs,
-        )
 
     def run(
         self,
         task: Task,
         project: Project,
-        context: dict[str, Any] | None = None,
+        context: AgentContext | None = None,
     ) -> EngineResult:
-        model_alias = self.model_resolver.resolve(task, project)
+        model_alias = self.model_selector.resolve(task, project)
         request = self._build_request(task, project, context, model_alias)
 
         try:
@@ -114,7 +91,7 @@ class LiteLLMEngine(AgentEngine):
         self,
         task: Task,
         project: Project,
-        context: dict[str, Any] | None,
+        context: AgentContext | None,
         model_alias: str,
     ) -> Request:
         instruction = {

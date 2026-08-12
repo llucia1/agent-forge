@@ -3,13 +3,34 @@ import unittest
 from unittest.mock import ANY, Mock, patch
 from uuid import UUID
 
+from core.contracts.configuration import RabbitMQSettings
+from core.contracts.messaging import TaskConsumer, TaskHandler, TaskPublisher
 from core.infrastructure.rabbitmq import (
-    TASK_QUEUES,
-    TaskConsumer,
-    TaskPublisher,
+    RabbitMQTaskConsumer,
+    RabbitMQTaskPublisher,
     UnsupportedAgentError,
 )
-from core.models.task import Task
+from core.models.task import AgentRole, Task
+
+
+TASK_QUEUES = {
+    AgentRole.ARCHITECT: "tasks.architect",
+    AgentRole.BACKEND: "tasks.backend",
+    AgentRole.FRONTEND: "tasks.frontend",
+    AgentRole.REVIEWER: "tasks.reviewer",
+    AgentRole.QA: "tasks.qa",
+    AgentRole.DEVOPS: "tasks.devops",
+}
+
+
+def rabbitmq_settings() -> RabbitMQSettings:
+    return RabbitMQSettings(
+        host="rabbitmq",
+        port=5672,
+        user="agent_forge",
+        password="broker-key",
+        task_queues=TASK_QUEUES,
+    )
 
 
 class TaskPublisherTests(unittest.TestCase):
@@ -23,7 +44,8 @@ class TaskPublisherTests(unittest.TestCase):
     ):
         connection = connection_factory.return_value
         channel = connection.channel.return_value
-        publisher = TaskPublisher()
+        publisher = RabbitMQTaskPublisher(rabbitmq_settings())
+        self.assertIsInstance(publisher, TaskPublisher)
 
         for agent, queue in TASK_QUEUES.items():
             with self.subTest(agent=agent):
@@ -85,7 +107,7 @@ class TaskPublisherTests(unittest.TestCase):
             UnsupportedAgentError,
             "Unsupported task agent: security",
         ):
-            TaskPublisher().publish(task)
+            RabbitMQTaskPublisher(rabbitmq_settings()).publish(task)
 
         connection_factory.assert_not_called()
 
@@ -103,11 +125,11 @@ class TaskPublisherTests(unittest.TestCase):
             project_id=self.project_id,
             title="Implement feature",
             description="Publish the task",
-            agent="backend",
+            agent=AgentRole.BACKEND,
         )
 
         with self.assertRaisesRegex(RuntimeError, "broker unavailable"):
-            TaskPublisher().publish(task)
+            RabbitMQTaskPublisher(rabbitmq_settings()).publish(task)
 
         connection.close.assert_called_once_with()
 
@@ -140,9 +162,13 @@ class TaskConsumerTests(unittest.TestCase):
         events = []
         handled_tasks = []
 
-        def handler(task):
+        handler = Mock(spec=TaskHandler)
+
+        def handle(task):
             events.append("handled")
             handled_tasks.append(task)
+
+        handler.handle.side_effect = handle
 
         channel.basic_ack.side_effect = lambda **kwargs: events.append("ack")
 
@@ -154,7 +180,9 @@ class TaskConsumerTests(unittest.TestCase):
 
         channel.start_consuming.side_effect = start_consuming
 
-        TaskConsumer().consume("architect", handler)
+        consumer = RabbitMQTaskConsumer(rabbitmq_settings())
+        self.assertIsInstance(consumer, TaskConsumer)
+        consumer.consume(AgentRole.ARCHITECT, handler)
 
         self.assertEqual(events, ["handled", "ack"])
         self.assertEqual(len(handled_tasks), 1)
@@ -190,9 +218,13 @@ class TaskConsumerTests(unittest.TestCase):
         method = Mock(delivery_tag=84)
         events = []
 
-        def handler(task):
+        handler = Mock(spec=TaskHandler)
+
+        def handle(task):
             events.append("handled")
             raise RuntimeError("processing failed")
+
+        handler.handle.side_effect = handle
 
         channel.basic_nack.side_effect = (
             lambda **kwargs: events.append("nack")
@@ -206,7 +238,10 @@ class TaskConsumerTests(unittest.TestCase):
 
         channel.start_consuming.side_effect = start_consuming
 
-        TaskConsumer().consume("architect", handler)
+        RabbitMQTaskConsumer(rabbitmq_settings()).consume(
+            AgentRole.ARCHITECT,
+            handler,
+        )
 
         self.assertEqual(events, ["handled", "nack"])
         channel.basic_ack.assert_not_called()

@@ -1,63 +1,81 @@
 from agents.architect.agent import ArchitectAgent
 from agents.orchestrator.agent import OrchestratorAgent
-from core.config import EngineSettings
-from core.engines import (
-    ClaudeEngine,
-    CodexEngine,
-    EngineResolver,
-    LiteLLMEngine,
-    ModelResolver,
-)
+from core.config import load_settings
+from core.engines.model_resolver import ModelResolver
+from core.engines.resolver import EngineResolver
+from core.infrastructure.engines.claude import ClaudeEngine
+from core.infrastructure.engines.codex import CodexEngine
+from core.infrastructure.engines.litellm import LiteLLMEngine
 from core.infrastructure.postgres import check_postgres
-from core.infrastructure.rabbitmq import TaskConsumer, check_rabbitmq
-from core.infrastructure.repositories.project_repository import ProjectRepository
-from core.infrastructure.repositories.task_repository import TaskRepository
-from core.memory import DefaultContextProvider
+from core.infrastructure.rabbitmq import (
+    RabbitMQTaskConsumer,
+    RabbitMQTaskPublisher,
+    check_rabbitmq,
+)
+from core.infrastructure.repositories.project_repository import (
+    PostgresProjectRepository,
+)
+from core.infrastructure.repositories.task_repository import (
+    PostgresTaskRepository,
+)
+from core.memory.default_context import DefaultContextProvider
+from core.models.task import AgentRole
+from core.orchestration.orchestrator import Orchestrator
 
 
 def main():
+    settings = load_settings()
+
     print("AgentForge started", flush=True)
-    print(f"PostgreSQL: {check_postgres()}", flush=True)
-    print(f"RabbitMQ: {check_rabbitmq()}", flush=True)
+    print(f"PostgreSQL: {check_postgres(settings.database)}", flush=True)
+    print(f"RabbitMQ: {check_rabbitmq(settings.rabbitmq)}", flush=True)
 
-    agent = OrchestratorAgent()
-
-    project = agent.orchestrator.create_project(
-        name="Demo Project",
-        description="Proyecto de prueba de AgentForge",
+    project_repository = PostgresProjectRepository(settings.database)
+    task_repository = PostgresTaskRepository(settings.database)
+    task_publisher = RabbitMQTaskPublisher(settings.rabbitmq)
+    task_consumer = RabbitMQTaskConsumer(settings.rabbitmq)
+    orchestration = Orchestrator(
+        project_creator=project_repository,
+        task_creator=task_repository,
+        task_publisher=task_publisher,
     )
-
-    task = agent.orchestrator.create_task(
-        project=project,
-        title="Define architecture",
-        description="Define initial project architecture",
-        agent="architect",
-    )
-
-    print(project, flush=True)
-    print(task, flush=True)
-
-    engine_settings = EngineSettings.from_environment()
+    orchestrator_agent = OrchestratorAgent(orchestration)
     model_resolver = ModelResolver(
-        default_model=engine_settings.default_model,
-        models_by_agent=engine_settings.models_by_agent,
-        models_by_project=engine_settings.models_by_project,
+        default_model=settings.engine.default_model,
+        models_by_agent=settings.engine.models_by_agent,
+        models_by_project=settings.engine.models_by_project,
     )
     engine = EngineResolver(
         engines={
             "codex": CodexEngine(),
             "claude": ClaudeEngine(),
-            "litellm": LiteLLMEngine.from_environment(model_resolver),
+            "litellm": LiteLLMEngine(model_resolver, settings.litellm),
         },
-        default_engine=engine_settings.default_engine,
+        default_engine=settings.engine.default_engine,
     )
     architect_agent = ArchitectAgent(
-        task_repository=TaskRepository(),
-        project_repository=ProjectRepository(),
+        task_status_writer=task_repository,
+        project_reader=project_repository,
         engine=engine,
         context_provider=DefaultContextProvider(),
     )
-    TaskConsumer().consume("architect", architect_agent.handle)
+
+    project = orchestrator_agent.create_project(
+        name="Demo Project",
+        description="Proyecto de prueba de AgentForge",
+    )
+
+    task = orchestrator_agent.create_task(
+        project=project,
+        title="Define architecture",
+        description="Define initial project architecture",
+        agent=AgentRole.ARCHITECT,
+    )
+
+    print(project, flush=True)
+    print(task, flush=True)
+
+    task_consumer.consume(AgentRole.ARCHITECT, architect_agent)
 
 
 if __name__ == "__main__":

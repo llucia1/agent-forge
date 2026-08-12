@@ -1,7 +1,7 @@
 import unittest
 from uuid import UUID
 
-from core.memory import DefaultContextProvider
+from core.memory.default_context import DefaultContextProvider
 from core.models.project import Project
 from core.models.task import Task
 

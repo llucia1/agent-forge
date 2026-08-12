@@ -1,20 +1,24 @@
-import os
 from uuid import UUID
 
 import psycopg
 from psycopg.types.json import Jsonb
 
+from core.contracts.configuration import DatabaseSettings
+from core.contracts.repositories import ProjectCreator, ProjectReader
 from core.models.project import Project
 
 
-class ProjectRepository:
+class PostgresProjectRepository(ProjectCreator, ProjectReader):
+    def __init__(self, settings: DatabaseSettings):
+        self.settings = settings
+
     def create(self, project: Project) -> None:
         with psycopg.connect(
-            host=os.getenv("POSTGRES_HOST"),
-            port=os.getenv("POSTGRES_PORT"),
-            dbname=os.getenv("POSTGRES_DB"),
-            user=os.getenv("POSTGRES_USER"),
-            password=os.getenv("POSTGRES_PASSWORD"),
+            host=self.settings.host,
+            port=self.settings.port,
+            dbname=self.settings.database,
+            user=self.settings.user,
+            password=self.settings.password,
         ) as conn:
             with conn.cursor() as cursor:
                 cursor.execute(
@@ -49,11 +53,11 @@ class ProjectRepository:
 
     def find_by_id(self, project_id: UUID) -> Project | None:
         with psycopg.connect(
-            host=os.getenv("POSTGRES_HOST"),
-            port=os.getenv("POSTGRES_PORT"),
-            dbname=os.getenv("POSTGRES_DB"),
-            user=os.getenv("POSTGRES_USER"),
-            password=os.getenv("POSTGRES_PASSWORD"),
+            host=self.settings.host,
+            port=self.settings.port,
+            dbname=self.settings.database,
+            user=self.settings.user,
+            password=self.settings.password,
         ) as conn:
             with conn.cursor() as cursor:
                 cursor.execute(

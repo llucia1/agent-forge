@@ -1,34 +1,22 @@
 from typing import Any
 
+from core.contracts.messaging import TaskPublisher
+from core.contracts.orchestration import OrchestrationUseCases
+from core.contracts.repositories import ProjectCreator, TaskCreator
 from core.models.project import Project
-from core.models.task import Task
-from core.infrastructure.rabbitmq import TaskPublisher
-from core.infrastructure.repositories.project_repository import ProjectRepository
-from core.infrastructure.repositories.task_repository import TaskRepository
+from core.models.task import AgentRole, Task
 
 
-class Orchestrator:
+class Orchestrator(OrchestrationUseCases):
     def __init__(
         self,
-        project_repository: ProjectRepository | None = None,
-        task_repository: TaskRepository | None = None,
-        task_publisher: TaskPublisher | None = None,
+        project_creator: ProjectCreator,
+        task_creator: TaskCreator,
+        task_publisher: TaskPublisher,
     ):
-        self.project_repository = (
-            project_repository
-            if project_repository is not None
-            else ProjectRepository()
-        )
-        self.task_repository = (
-            task_repository
-            if task_repository is not None
-            else TaskRepository()
-        )
-        self.task_publisher = (
-            task_publisher
-            if task_publisher is not None
-            else TaskPublisher()
-        )
+        self.project_creator = project_creator
+        self.task_creator = task_creator
+        self.task_publisher = task_publisher
 
     def create_project(
         self,
@@ -70,7 +58,7 @@ class Orchestrator:
             ),
         )
 
-        self.project_repository.create(project)
+        self.project_creator.create(project)
 
         return project
 
@@ -79,7 +67,7 @@ class Orchestrator:
         project: Project,
         title: str,
         description: str,
-        agent: str,
+        agent: AgentRole,
     ) -> Task:
         task = Task(
             project_id=project.id,
@@ -88,7 +76,7 @@ class Orchestrator:
             agent=agent,
         )
 
-        self.task_repository.create(task)
+        self.task_creator.create(task)
         self.task_publisher.publish(task)
 
         return task
