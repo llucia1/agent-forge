@@ -1,0 +1,17 @@
+model_list:
+  - model_name: architecture-primary
+    litellm_params:
+      model: os.environ/LITELLM_ARCHITECT_MODEL
+      api_base: os.environ/OLLAMA_BASE_URL
+
+  - model_name: general-default
+    litellm_params:
+      model: os.environ/LITELLM_GENERAL_MODEL
+      api_base: os.environ/OLLAMA_BASE_URL
+
+litellm_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+
+
+
+

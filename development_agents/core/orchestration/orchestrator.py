@@ -1,3 +1,5 @@
+from typing import Any
+
 from core.models.project import Project
 from core.models.task import Task
 from core.infrastructure.rabbitmq import TaskPublisher
@@ -28,10 +30,44 @@ class Orchestrator:
             else TaskPublisher()
         )
 
-    def create_project(self, name: str, description: str) -> Project:
+    def create_project(
+        self,
+        name: str,
+        description: str,
+        backend_stack: dict[str, Any] | None = None,
+        backend_architecture: dict[str, Any] | None = None,
+        frontend_stack: dict[str, Any] | None = None,
+        frontend_architecture: dict[str, Any] | None = None,
+        infrastructure: dict[str, Any] | None = None,
+        technical_constraints: list[str] | None = None,
+    ) -> Project:
         project = Project(
             name=name,
             description=description,
+            backend_stack=(
+                backend_stack if backend_stack is not None else {}
+            ),
+            backend_architecture=(
+                backend_architecture
+                if backend_architecture is not None
+                else {}
+            ),
+            frontend_stack=(
+                frontend_stack if frontend_stack is not None else {}
+            ),
+            frontend_architecture=(
+                frontend_architecture
+                if frontend_architecture is not None
+                else {}
+            ),
+            infrastructure=(
+                infrastructure if infrastructure is not None else {}
+            ),
+            technical_constraints=(
+                technical_constraints
+                if technical_constraints is not None
+                else []
+            ),
         )
 
         self.project_repository.create(project)

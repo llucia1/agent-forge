@@ -1,3 +1,5 @@
+version: "3.8"
+
 services:
   agent-forge:
     build:
@@ -11,11 +13,60 @@ services:
       - ./workspaces:/workspaces
     env_file:
       - .env
+    environment:
+      LITELLM_BASE_URL: ${LITELLM_BASE_URL}
+      LITELLM_API_KEY: ${LITELLM_API_KEY}
     depends_on:
       postgres:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
+      litellm:
+        condition: service_healthy
+    networks:
+      - app_net
+
+  litellm:
+    image: docker.litellm.ai/berriai/litellm:v1.94.2
+    container_name: agent-forge-litellm
+    restart: unless-stopped
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    volumes:
+      - ./litellm/config.yaml:/app/config.yaml:ro
+    env_file:
+      - .env.litellm
+    depends_on:
+      ollama:
+        condition: service_healthy
+    expose:
+      - "4000"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python3 -c \"import urllib.request; urllib.request.urlopen('http://localhost:4000/health/liveliness')\"",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks:
+      - app_net
+
+  ollama:
+    image: ollama/ollama:0.32.5
+    container_name: agent-forge-ollama
+    restart: unless-stopped
+    volumes:
+      - ollama_models:/root/.ollama
+    expose:
+      - "11434"
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
     networks:
       - app_net
 
@@ -62,6 +113,7 @@ services:
 volumes:
   postgres_data:
   rabbitmq_data:
+  ollama_models:
 
 networks:
   app_net:

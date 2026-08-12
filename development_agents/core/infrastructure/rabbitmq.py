@@ -1,5 +1,7 @@
 import json
 import os
+from collections.abc import Callable
+from uuid import UUID
 
 import pika
 
@@ -18,6 +20,15 @@ TASK_QUEUES = {
 
 class UnsupportedAgentError(ValueError):
     """Raised when a task targets an agent without a configured queue."""
+
+
+def _get_task_queue(agent: str) -> str:
+    queue = TASK_QUEUES.get(agent)
+
+    if queue is None:
+        raise UnsupportedAgentError(f"Unsupported task agent: {agent}")
+
+    return queue
 
 
 def _create_connection() -> pika.BlockingConnection:
@@ -45,12 +56,7 @@ def check_rabbitmq() -> bool:
 
 class TaskPublisher:
     def publish(self, task: Task) -> None:
-        queue = TASK_QUEUES.get(task.agent)
-
-        if queue is None:
-            raise UnsupportedAgentError(
-                f"Unsupported task agent: {task.agent}"
-            )
+        queue = _get_task_queue(task.agent)
 
         message = json.dumps(
             {
@@ -79,3 +85,55 @@ class TaskPublisher:
             )
         finally:
             connection.close()
+
+
+class TaskConsumer:
+    def consume(
+        self,
+        agent: str,
+        handler: Callable[[Task], None],
+    ) -> None:
+        queue = _get_task_queue(agent)
+        connection = _create_connection()
+
+        try:
+            channel = connection.channel()
+            channel.queue_declare(queue=queue, durable=True)
+            channel.basic_qos(prefetch_count=1)
+
+            def on_message(channel, method, properties, body):
+                try:
+                    task = self._deserialize_task(body)
+                    handler(task)
+                except Exception:
+                    channel.basic_nack(
+                        delivery_tag=method.delivery_tag,
+                        requeue=False,
+                    )
+                else:
+                    channel.basic_ack(
+                        delivery_tag=method.delivery_tag,
+                    )
+
+            channel.basic_consume(
+                queue=queue,
+                on_message_callback=on_message,
+                auto_ack=False,
+            )
+            channel.start_consuming()
+        finally:
+            if connection.is_open:
+                connection.close()
+
+    @staticmethod
+    def _deserialize_task(body: bytes) -> Task:
+        message = json.loads(body)
+
+        return Task(
+            id=UUID(message["id"]),
+            project_id=UUID(message["project_id"]),
+            title=message["title"],
+            description=message["description"],
+            agent=message["agent"],
+            status=message["status"],
+        )

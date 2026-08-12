@@ -1,6 +1,7 @@
 .env
 .env.*
 !.env.example
+!.env.litellm.example
 
 __pycache__/
 *.py[cod]

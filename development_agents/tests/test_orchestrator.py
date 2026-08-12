@@ -6,6 +6,45 @@ from core.orchestration.orchestrator import Orchestrator
 
 
 class OrchestratorTaskPublishingTests(unittest.TestCase):
+    def test_create_project_persists_technical_definition(self):
+        project_repository = Mock()
+        orchestrator = Orchestrator(
+            project_repository=project_repository,
+            task_repository=Mock(),
+            task_publisher=Mock(),
+        )
+        technical_definition = {
+            "backend_stack": {"language": "Python"},
+            "backend_architecture": {"style": "layered"},
+            "frontend_stack": {"framework": "React"},
+            "frontend_architecture": {"pattern": "component-based"},
+            "infrastructure": {"runtime": "Docker Compose"},
+            "technical_constraints": ["Use Python 3.12"],
+        }
+
+        project = orchestrator.create_project(
+            name="AgentForge",
+            description="Agent platform",
+            **technical_definition,
+        )
+
+        self.assertIs(project_repository.create.call_args.args[0], project)
+        self.assertEqual(project.backend_stack, {"language": "Python"})
+        self.assertEqual(project.backend_architecture, {"style": "layered"})
+        self.assertEqual(project.frontend_stack, {"framework": "React"})
+        self.assertEqual(
+            project.frontend_architecture,
+            {"pattern": "component-based"},
+        )
+        self.assertEqual(
+            project.infrastructure,
+            {"runtime": "Docker Compose"},
+        )
+        self.assertEqual(
+            project.technical_constraints,
+            ["Use Python 3.12"],
+        )
+
     def test_create_task_persists_before_publishing(self):
         operations = Mock()
         task_repository = Mock()

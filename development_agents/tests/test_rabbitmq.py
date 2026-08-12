@@ -1,10 +1,11 @@
 import json
 import unittest
-from unittest.mock import patch
+from unittest.mock import ANY, Mock, patch
 from uuid import UUID
 
 from core.infrastructure.rabbitmq import (
     TASK_QUEUES,
+    TaskConsumer,
     TaskPublisher,
     UnsupportedAgentError,
 )
@@ -108,6 +109,111 @@ class TaskPublisherTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "broker unavailable"):
             TaskPublisher().publish(task)
 
+        connection.close.assert_called_once_with()
+
+
+class TaskConsumerTests(unittest.TestCase):
+    task_id = UUID("2cb5fe26-74a0-48f1-a989-aaf9b41b343b")
+    project_id = UUID("93de5ea5-729a-4c5e-8dc3-443165ed516b")
+
+    def _message(self):
+        return json.dumps(
+            {
+                "id": str(self.task_id),
+                "project_id": str(self.project_id),
+                "title": "Define architecture",
+                "description": "Define the application architecture",
+                "agent": "architect",
+                "status": "pending",
+            }
+        ).encode("utf-8")
+
+    @patch("core.infrastructure.rabbitmq.pika.BlockingConnection")
+    def test_consumes_deserialized_task_and_acknowledges_after_success(
+        self,
+        connection_factory,
+    ):
+        connection = connection_factory.return_value
+        connection.is_open = True
+        channel = connection.channel.return_value
+        method = Mock(delivery_tag=42)
+        events = []
+        handled_tasks = []
+
+        def handler(task):
+            events.append("handled")
+            handled_tasks.append(task)
+
+        channel.basic_ack.side_effect = lambda **kwargs: events.append("ack")
+
+        def start_consuming():
+            callback = channel.basic_consume.call_args.kwargs[
+                "on_message_callback"
+            ]
+            callback(channel, method, None, self._message())
+
+        channel.start_consuming.side_effect = start_consuming
+
+        TaskConsumer().consume("architect", handler)
+
+        self.assertEqual(events, ["handled", "ack"])
+        self.assertEqual(len(handled_tasks), 1)
+        task = handled_tasks[0]
+        self.assertIsInstance(task, Task)
+        self.assertEqual(task.id, self.task_id)
+        self.assertEqual(task.project_id, self.project_id)
+        self.assertEqual(task.title, "Define architecture")
+        self.assertEqual(task.agent, "architect")
+        self.assertEqual(task.status, "pending")
+        channel.queue_declare.assert_called_once_with(
+            queue="tasks.architect",
+            durable=True,
+        )
+        channel.basic_qos.assert_called_once_with(prefetch_count=1)
+        channel.basic_consume.assert_called_once_with(
+            queue="tasks.architect",
+            on_message_callback=ANY,
+            auto_ack=False,
+        )
+        channel.basic_ack.assert_called_once_with(delivery_tag=42)
+        channel.basic_nack.assert_not_called()
+        connection.close.assert_called_once_with()
+
+    @patch("core.infrastructure.rabbitmq.pika.BlockingConnection")
+    def test_nacks_without_requeue_when_handler_fails(
+        self,
+        connection_factory,
+    ):
+        connection = connection_factory.return_value
+        connection.is_open = True
+        channel = connection.channel.return_value
+        method = Mock(delivery_tag=84)
+        events = []
+
+        def handler(task):
+            events.append("handled")
+            raise RuntimeError("processing failed")
+
+        channel.basic_nack.side_effect = (
+            lambda **kwargs: events.append("nack")
+        )
+
+        def start_consuming():
+            callback = channel.basic_consume.call_args.kwargs[
+                "on_message_callback"
+            ]
+            callback(channel, method, None, self._message())
+
+        channel.start_consuming.side_effect = start_consuming
+
+        TaskConsumer().consume("architect", handler)
+
+        self.assertEqual(events, ["handled", "nack"])
+        channel.basic_ack.assert_not_called()
+        channel.basic_nack.assert_called_once_with(
+            delivery_tag=84,
+            requeue=False,
+        )
         connection.close.assert_called_once_with()
 
 
