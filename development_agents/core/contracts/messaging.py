@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from collections.abc import Mapping
 
 from core.models.task import AgentRole, Task
 
@@ -17,5 +18,5 @@ class TaskHandler(ABC):
 
 class TaskConsumer(ABC):
     @abstractmethod
-    def consume(self, agent: AgentRole, handler: TaskHandler) -> None:
-        """Consume tasks for one agent and delegate them to its handler."""
+    def consume(self, handlers: Mapping[AgentRole, TaskHandler]) -> None:
+        """Consume each configured agent queue with its assigned handler."""

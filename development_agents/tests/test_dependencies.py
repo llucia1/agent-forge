@@ -144,6 +144,14 @@ class LayerDependencyTests(unittest.TestCase):
             with self.subTest(path=path):
                 self.assert_imports_do_not_start_with(path, ("agents",))
 
+    def test_agents_do_not_import_filesystem_modules(self):
+        for path in (SOURCE_ROOT / "agents").rglob("*.py"):
+            with self.subTest(path=path):
+                self.assert_imports_do_not_start_with(
+                    path,
+                    ("os", "pathlib", "shutil", "tempfile"),
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

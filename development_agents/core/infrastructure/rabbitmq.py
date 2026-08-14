@@ -1,4 +1,5 @@
 import json
+from collections.abc import Mapping
 from uuid import UUID
 
 import pika
@@ -86,40 +87,46 @@ class RabbitMQTaskConsumer(TaskConsumer):
 
     def consume(
         self,
-        agent: AgentRole,
-        handler: TaskHandler,
+        handlers: Mapping[AgentRole, TaskHandler],
     ) -> None:
-        queue = _get_task_queue(self.settings, agent)
+        routed_handlers = [
+            (_get_task_queue(self.settings, agent), handler)
+            for agent, handler in handlers.items()
+        ]
         connection = _create_connection(self.settings)
 
         try:
             channel = connection.channel()
-            channel.queue_declare(queue=queue, durable=True)
             channel.basic_qos(prefetch_count=1)
 
-            def on_message(channel, method, properties, body):
-                try:
-                    task = self._deserialize_task(body)
-                    handler.handle(task)
-                except Exception:
-                    channel.basic_nack(
-                        delivery_tag=method.delivery_tag,
-                        requeue=False,
-                    )
-                else:
-                    channel.basic_ack(
-                        delivery_tag=method.delivery_tag,
-                    )
-
-            channel.basic_consume(
-                queue=queue,
-                on_message_callback=on_message,
-                auto_ack=False,
-            )
+            for queue, handler in routed_handlers:
+                channel.queue_declare(queue=queue, durable=True)
+                channel.basic_consume(
+                    queue=queue,
+                    on_message_callback=self._message_callback(handler),
+                    auto_ack=False,
+                )
             channel.start_consuming()
         finally:
             if connection.is_open:
                 connection.close()
+
+    def _message_callback(self, handler: TaskHandler):
+        def on_message(channel, method, properties, body):
+            try:
+                task = self._deserialize_task(body)
+                handler.handle(task)
+            except Exception:
+                channel.basic_nack(
+                    delivery_tag=method.delivery_tag,
+                    requeue=False,
+                )
+            else:
+                channel.basic_ack(
+                    delivery_tag=method.delivery_tag,
+                )
+
+        return on_message
 
     @staticmethod
     def _deserialize_task(body: bytes) -> Task:

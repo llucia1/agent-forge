@@ -38,3 +38,18 @@ CREATE TABLE IF NOT EXISTS tasks (
 
 CREATE INDEX IF NOT EXISTS idx_tasks_project_id ON tasks(project_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
+
+CREATE TABLE IF NOT EXISTS task_results (
+    id UUID PRIMARY KEY,
+    task_id UUID NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    agent VARCHAR(100) NOT NULL,
+    provider VARCHAR(100) NOT NULL,
+    model_alias VARCHAR(255),
+    output TEXT NOT NULL,
+    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_task_results_task_id
+    ON task_results(task_id);

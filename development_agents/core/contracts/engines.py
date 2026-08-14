@@ -32,6 +32,7 @@ class EngineResult:
     output: str
     metadata: dict[str, Any]
     provider: str
+    model_alias: str | None = None
 
 
 class AgentEngine(ABC):

@@ -77,6 +77,7 @@ class EngineStubTests(unittest.TestCase):
         context = {
             "project_memory": {"summary": "Known context"},
             "previous_decisions": ["Use PostgreSQL"],
+            "output_contract": {"type": "object"},
         }
         engine = LiteLLMEngine(
             model_selector,
@@ -98,6 +99,7 @@ class EngineStubTests(unittest.TestCase):
             },
         )
         self.assertEqual(result.output, "Architecture output")
+        self.assertEqual(result.model_alias, "architecture-primary")
         model_selector.resolve.assert_called_once_with(
             self.task,
             self.project,
@@ -114,6 +116,10 @@ class EngineStubTests(unittest.TestCase):
         )
         body = json.loads(request.data)
         self.assertEqual(body["model"], "architecture-primary")
+        self.assertEqual(
+            body["response_format"],
+            {"type": "json_object"},
+        )
         instruction = json.loads(body["messages"][1]["content"])
         self.assertEqual(instruction["task"]["title"], self.task.title)
         self.assertEqual(instruction["project"]["name"], self.project.name)

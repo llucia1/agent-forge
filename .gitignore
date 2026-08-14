@@ -13,6 +13,8 @@ venv/
 
 *.log
 logs/
+workspaces/*
+!workspaces/.gitkeep
 
 .DS_Store
 Thumbs.db

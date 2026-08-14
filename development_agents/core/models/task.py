@@ -20,6 +20,7 @@ class AgentRole(_ProtocolValue):
 class TaskStatus(_ProtocolValue):
     PENDING = "pending"
     IN_PROGRESS = "in_progress"
+    NEEDS_INPUT = "needs_input"
     COMPLETED = "completed"
     FAILED = "failed"
 

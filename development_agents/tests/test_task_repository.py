@@ -70,6 +70,20 @@ class TaskRepositoryTests(unittest.TestCase):
         )
         self.assertEqual(parameters, ("in_progress", task_id))
 
+    @patch("core.infrastructure.repositories.task_repository.psycopg.connect")
+    def test_update_status_persists_resumable_needs_input(self, connect):
+        task_id = UUID("2cb5fe26-74a0-48f1-a989-aaf9b41b343b")
+        connection = connect.return_value.__enter__.return_value
+        cursor = connection.cursor.return_value.__enter__.return_value
+
+        PostgresTaskRepository(self.settings).update_status(
+            task_id,
+            TaskStatus.NEEDS_INPUT,
+        )
+
+        _, parameters = cursor.execute.call_args.args
+        self.assertEqual(parameters, ("needs_input", task_id))
+
 
 if __name__ == "__main__":
     unittest.main()

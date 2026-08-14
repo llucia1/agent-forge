@@ -3,6 +3,7 @@ from typing import Any
 from core.contracts.messaging import TaskPublisher
 from core.contracts.orchestration import OrchestrationUseCases
 from core.contracts.repositories import ProjectCreator, TaskCreator
+from core.contracts.workspaces import ProjectWorkspaceInitializer
 from core.models.project import Project
 from core.models.task import AgentRole, Task
 
@@ -13,10 +14,12 @@ class Orchestrator(OrchestrationUseCases):
         project_creator: ProjectCreator,
         task_creator: TaskCreator,
         task_publisher: TaskPublisher,
+        workspace_initializer: ProjectWorkspaceInitializer,
     ):
         self.project_creator = project_creator
         self.task_creator = task_creator
         self.task_publisher = task_publisher
+        self.workspace_initializer = workspace_initializer
 
     def create_project(
         self,
@@ -59,6 +62,7 @@ class Orchestrator(OrchestrationUseCases):
         )
 
         self.project_creator.create(project)
+        self.workspace_initializer.initialize(project.id)
 
         return project
 

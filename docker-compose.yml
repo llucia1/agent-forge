@@ -7,6 +7,7 @@ services:
       dockerfile: Dockerfile
     container_name: agent-forge
     restart: unless-stopped
+    user: "${AGENTFORGE_UID:-1000}:${AGENTFORGE_GID:-1000}"
     working_dir: /app
     volumes:
       - ./development_agents:/app
@@ -82,6 +83,7 @@ services:
       - "5434:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ./development_agents/scripts/init_db.sql:/docker-entrypoint-initdb.d/init_db.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 10s

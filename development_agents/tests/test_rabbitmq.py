@@ -1,6 +1,6 @@
 import json
 import unittest
-from unittest.mock import ANY, Mock, patch
+from unittest.mock import ANY, Mock, call, patch
 from uuid import UUID
 
 from core.contracts.configuration import RabbitMQSettings
@@ -138,14 +138,14 @@ class TaskConsumerTests(unittest.TestCase):
     task_id = UUID("2cb5fe26-74a0-48f1-a989-aaf9b41b343b")
     project_id = UUID("93de5ea5-729a-4c5e-8dc3-443165ed516b")
 
-    def _message(self):
+    def _message(self, agent=AgentRole.ARCHITECT):
         return json.dumps(
             {
                 "id": str(self.task_id),
                 "project_id": str(self.project_id),
                 "title": "Define architecture",
                 "description": "Define the application architecture",
-                "agent": "architect",
+                "agent": str(agent),
                 "status": "pending",
             }
         ).encode("utf-8")
@@ -182,7 +182,7 @@ class TaskConsumerTests(unittest.TestCase):
 
         consumer = RabbitMQTaskConsumer(rabbitmq_settings())
         self.assertIsInstance(consumer, TaskConsumer)
-        consumer.consume(AgentRole.ARCHITECT, handler)
+        consumer.consume({AgentRole.ARCHITECT: handler})
 
         self.assertEqual(events, ["handled", "ack"])
         self.assertEqual(len(handled_tasks), 1)
@@ -239,8 +239,7 @@ class TaskConsumerTests(unittest.TestCase):
         channel.start_consuming.side_effect = start_consuming
 
         RabbitMQTaskConsumer(rabbitmq_settings()).consume(
-            AgentRole.ARCHITECT,
-            handler,
+            {AgentRole.ARCHITECT: handler},
         )
 
         self.assertEqual(events, ["handled", "nack"])
@@ -250,6 +249,68 @@ class TaskConsumerTests(unittest.TestCase):
             requeue=False,
         )
         connection.close.assert_called_once_with()
+
+    @patch("core.infrastructure.rabbitmq.pika.BlockingConnection")
+    def test_routes_architect_and_backend_queues_to_their_handlers(
+        self,
+        connection_factory,
+    ):
+        connection = connection_factory.return_value
+        connection.is_open = True
+        channel = connection.channel.return_value
+        architect_handler = Mock(spec=TaskHandler)
+        backend_handler = Mock(spec=TaskHandler)
+
+        def start_consuming():
+            callbacks_by_queue = {
+                call.kwargs["queue"]: call.kwargs["on_message_callback"]
+                for call in channel.basic_consume.call_args_list
+            }
+            callbacks_by_queue["tasks.architect"](
+                channel,
+                Mock(delivery_tag=1),
+                None,
+                self._message(AgentRole.ARCHITECT),
+            )
+            callbacks_by_queue["tasks.backend"](
+                channel,
+                Mock(delivery_tag=2),
+                None,
+                self._message(AgentRole.BACKEND),
+            )
+
+        channel.start_consuming.side_effect = start_consuming
+
+        RabbitMQTaskConsumer(rabbitmq_settings()).consume(
+            {
+                AgentRole.ARCHITECT: architect_handler,
+                AgentRole.BACKEND: backend_handler,
+            }
+        )
+
+        self.assertEqual(
+            channel.queue_declare.call_args_list,
+            [
+                call(
+                    queue="tasks.architect",
+                    durable=True,
+                ),
+                call(
+                    queue="tasks.backend",
+                    durable=True,
+                ),
+            ],
+        )
+        self.assertEqual(architect_handler.handle.call_count, 1)
+        self.assertEqual(backend_handler.handle.call_count, 1)
+        self.assertEqual(
+            architect_handler.handle.call_args.args[0].agent,
+            AgentRole.ARCHITECT,
+        )
+        self.assertEqual(
+            backend_handler.handle.call_args.args[0].agent,
+            AgentRole.BACKEND,
+        )
 
 
 if __name__ == "__main__":

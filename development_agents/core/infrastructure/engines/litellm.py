@@ -120,6 +120,9 @@ class LiteLLMEngine(AgentEngine):
                 },
             ],
         }
+        if context is not None and "output_contract" in context:
+            payload["response_format"] = {"type": "json_object"}
+
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
 
         return Request(
@@ -166,4 +169,5 @@ class LiteLLMEngine(AgentEngine):
             output=output,
             metadata=metadata,
             provider="litellm",
+            model_alias=model_alias,
         )

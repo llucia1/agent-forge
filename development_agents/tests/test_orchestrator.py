@@ -3,6 +3,7 @@ from unittest.mock import Mock, call
 
 from core.contracts.messaging import TaskPublisher
 from core.contracts.repositories import ProjectCreator, TaskCreator
+from core.contracts.workspaces import ProjectWorkspaceInitializer
 from core.models.project import Project
 from core.models.task import AgentRole
 from core.orchestration.orchestrator import Orchestrator
@@ -11,10 +12,12 @@ from core.orchestration.orchestrator import Orchestrator
 class OrchestratorTaskPublishingTests(unittest.TestCase):
     def test_create_project_persists_technical_definition(self):
         project_creator = Mock(spec=ProjectCreator)
+        workspace_initializer = Mock(spec=ProjectWorkspaceInitializer)
         orchestrator = Orchestrator(
             project_creator=project_creator,
             task_creator=Mock(spec=TaskCreator),
             task_publisher=Mock(spec=TaskPublisher),
+            workspace_initializer=workspace_initializer,
         )
         technical_definition = {
             "backend_stack": {"language": "Python"},
@@ -47,6 +50,30 @@ class OrchestratorTaskPublishingTests(unittest.TestCase):
             project.technical_constraints,
             ["Use Python 3.12"],
         )
+        workspace_initializer.initialize.assert_called_once_with(project.id)
+
+    def test_create_project_persists_before_initializing_workspace(self):
+        operations = Mock()
+        project_creator = Mock(spec=ProjectCreator)
+        workspace_initializer = Mock(spec=ProjectWorkspaceInitializer)
+        project_creator.create.side_effect = operations.persist
+        workspace_initializer.initialize.side_effect = operations.initialize
+        orchestrator = Orchestrator(
+            project_creator=project_creator,
+            task_creator=Mock(spec=TaskCreator),
+            task_publisher=Mock(spec=TaskPublisher),
+            workspace_initializer=workspace_initializer,
+        )
+
+        project = orchestrator.create_project(
+            name="AgentForge",
+            description="Agent platform",
+        )
+
+        self.assertEqual(
+            operations.mock_calls,
+            [call.persist(project), call.initialize(project.id)],
+        )
 
     def test_create_task_persists_before_publishing(self):
         operations = Mock()
@@ -58,6 +85,7 @@ class OrchestratorTaskPublishingTests(unittest.TestCase):
             project_creator=Mock(spec=ProjectCreator),
             task_creator=task_creator,
             task_publisher=task_publisher,
+            workspace_initializer=Mock(spec=ProjectWorkspaceInitializer),
         )
 
         task = orchestrator.create_task(
@@ -82,6 +110,7 @@ class OrchestratorTaskPublishingTests(unittest.TestCase):
             project_creator=Mock(spec=ProjectCreator),
             task_creator=task_creator,
             task_publisher=task_publisher,
+            workspace_initializer=Mock(spec=ProjectWorkspaceInitializer),
         )
 
         with self.assertRaisesRegex(RuntimeError, "database unavailable"):

@@ -10,6 +10,8 @@ class AgentContext(TypedDict, total=False):
     previous_decisions: list[str]
     feedback: list[str]
     rag_context: Any | None
+    output_contract: dict[str, Any]
+    backend_implementation: dict[str, Any]
 
 
 class ContextProvider(ABC):
