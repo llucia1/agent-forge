@@ -39,6 +39,7 @@ class EngineStubTests(unittest.TestCase):
         self.litellm_settings = LiteLLMSettings(
             base_url="http://litellm:4000",
             api_key="gateway-key",
+            timeout_seconds=600.0,
         )
 
     def test_codex_stub_returns_engine_result(self):
@@ -126,7 +127,7 @@ class EngineStubTests(unittest.TestCase):
         self.assertEqual(instruction["context"], context)
         self.assertEqual(
             http_open.call_args.kwargs["timeout"],
-            180.0,
+            600.0,
         )
 
     def test_litellm_uses_only_injected_gateway_settings(self):
@@ -137,7 +138,7 @@ class EngineStubTests(unittest.TestCase):
 
         self.assertEqual(engine.base_url, "http://litellm:4000")
         self.assertEqual(engine.api_key, "gateway-key")
-        self.assertEqual(engine.timeout_seconds, 180.0)
+        self.assertEqual(engine.timeout_seconds, 600.0)
 
     def test_litellm_uses_injected_timeout(self):
         engine = LiteLLMEngine(

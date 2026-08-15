@@ -1,4 +1,6 @@
 import json
+import queue
+import threading
 import unittest
 from unittest.mock import ANY, Mock, call, patch
 from uuid import UUID
@@ -158,9 +160,13 @@ class TaskConsumerTests(unittest.TestCase):
         connection = connection_factory.return_value
         connection.is_open = True
         channel = connection.channel.return_value
-        method = Mock(delivery_tag=42)
+        channel.is_open = True
+        method = Mock(delivery_tag=42, redelivered=False)
         events = []
         handled_tasks = []
+        connection.add_callback_threadsafe.side_effect = (
+            lambda callback: callback()
+        )
 
         handler = Mock(spec=TaskHandler)
 
@@ -205,6 +211,7 @@ class TaskConsumerTests(unittest.TestCase):
         )
         channel.basic_ack.assert_called_once_with(delivery_tag=42)
         channel.basic_nack.assert_not_called()
+        connection.add_callback_threadsafe.assert_called_once()
         connection.close.assert_called_once_with()
 
     @patch("core.infrastructure.rabbitmq.pika.BlockingConnection")
@@ -215,8 +222,12 @@ class TaskConsumerTests(unittest.TestCase):
         connection = connection_factory.return_value
         connection.is_open = True
         channel = connection.channel.return_value
-        method = Mock(delivery_tag=84)
+        channel.is_open = True
+        method = Mock(delivery_tag=84, redelivered=False)
         events = []
+        connection.add_callback_threadsafe.side_effect = (
+            lambda callback: callback()
+        )
 
         handler = Mock(spec=TaskHandler)
 
@@ -238,9 +249,13 @@ class TaskConsumerTests(unittest.TestCase):
 
         channel.start_consuming.side_effect = start_consuming
 
-        RabbitMQTaskConsumer(rabbitmq_settings()).consume(
-            {AgentRole.ARCHITECT: handler},
-        )
+        with self.assertLogs(
+            "core.infrastructure.rabbitmq",
+            level="ERROR",
+        ):
+            RabbitMQTaskConsumer(rabbitmq_settings()).consume(
+                {AgentRole.ARCHITECT: handler},
+            )
 
         self.assertEqual(events, ["handled", "nack"])
         channel.basic_ack.assert_not_called()
@@ -248,6 +263,7 @@ class TaskConsumerTests(unittest.TestCase):
             delivery_tag=84,
             requeue=False,
         )
+        connection.add_callback_threadsafe.assert_called_once()
         connection.close.assert_called_once_with()
 
     @patch("core.infrastructure.rabbitmq.pika.BlockingConnection")
@@ -258,6 +274,7 @@ class TaskConsumerTests(unittest.TestCase):
         connection = connection_factory.return_value
         connection.is_open = True
         channel = connection.channel.return_value
+        channel.is_open = True
         architect_handler = Mock(spec=TaskHandler)
         backend_handler = Mock(spec=TaskHandler)
 
@@ -268,13 +285,13 @@ class TaskConsumerTests(unittest.TestCase):
             }
             callbacks_by_queue["tasks.architect"](
                 channel,
-                Mock(delivery_tag=1),
+                Mock(delivery_tag=1, redelivered=False),
                 None,
                 self._message(AgentRole.ARCHITECT),
             )
             callbacks_by_queue["tasks.backend"](
                 channel,
-                Mock(delivery_tag=2),
+                Mock(delivery_tag=2, redelivered=False),
                 None,
                 self._message(AgentRole.BACKEND),
             )
@@ -311,6 +328,229 @@ class TaskConsumerTests(unittest.TestCase):
             backend_handler.handle.call_args.args[0].agent,
             AgentRole.BACKEND,
         )
+
+    @patch("core.infrastructure.rabbitmq.pika.BlockingConnection")
+    def test_long_handler_does_not_block_io_and_ack_runs_on_io_thread(
+        self,
+        connection_factory,
+    ):
+        connection = connection_factory.return_value
+        connection.is_open = True
+        channel = connection.channel.return_value
+        channel.is_open = True
+        method = Mock(delivery_tag=126, redelivered=True)
+        handler = Mock(spec=TaskHandler)
+        handler_started = threading.Event()
+        release_handler = threading.Event()
+        settlements = queue.Queue()
+        handler_thread_ids = []
+        ack_thread_ids = []
+        io_thread_ids = []
+
+        def handle(task):
+            handler_thread_ids.append(threading.get_ident())
+            handler_started.set()
+            self.assertTrue(release_handler.wait(timeout=2))
+
+        handler.handle.side_effect = handle
+        connection.add_callback_threadsafe.side_effect = settlements.put
+        channel.basic_ack.side_effect = (
+            lambda **kwargs: ack_thread_ids.append(threading.get_ident())
+        )
+
+        def start_consuming():
+            io_thread_ids.append(threading.get_ident())
+            callback = channel.basic_consume.call_args.kwargs[
+                "on_message_callback"
+            ]
+            callback(channel, method, None, self._message())
+
+            self.assertTrue(handler_started.wait(timeout=2))
+            self.assertFalse(release_handler.is_set())
+            release_handler.set()
+            settlement = settlements.get(timeout=2)
+            settlement()
+
+        channel.start_consuming.side_effect = start_consuming
+
+        with self.assertLogs(
+            "core.infrastructure.rabbitmq",
+            level="INFO",
+        ) as logs:
+            RabbitMQTaskConsumer(rabbitmq_settings()).consume(
+                {AgentRole.ARCHITECT: handler},
+            )
+
+        self.assertNotEqual(handler_thread_ids, io_thread_ids)
+        self.assertEqual(ack_thread_ids, io_thread_ids)
+        channel.basic_ack.assert_called_once_with(delivery_tag=126)
+        self.assertTrue(
+            any(
+                str(self.task_id) in message
+                and "delivery_tag=126" in message
+                and "redelivered=True" in message
+                for message in logs.output
+            )
+        )
+
+    @patch("core.infrastructure.rabbitmq.pika.BlockingConnection")
+    def test_single_worker_processes_handlers_sequentially(
+        self,
+        connection_factory,
+    ):
+        connection = connection_factory.return_value
+        connection.is_open = True
+        channel = connection.channel.return_value
+        channel.is_open = True
+        first_handler = Mock(spec=TaskHandler)
+        second_handler = Mock(spec=TaskHandler)
+        first_started = threading.Event()
+        release_first = threading.Event()
+        second_started = threading.Event()
+        settlements = queue.Queue()
+
+        def handle_first(task):
+            first_started.set()
+            self.assertTrue(release_first.wait(timeout=2))
+
+        first_handler.handle.side_effect = handle_first
+        second_handler.handle.side_effect = (
+            lambda task: second_started.set()
+        )
+        connection.add_callback_threadsafe.side_effect = settlements.put
+
+        def start_consuming():
+            callbacks_by_queue = {
+                call.kwargs["queue"]: call.kwargs["on_message_callback"]
+                for call in channel.basic_consume.call_args_list
+            }
+            callbacks_by_queue["tasks.architect"](
+                channel,
+                Mock(delivery_tag=1, redelivered=False),
+                None,
+                self._message(AgentRole.ARCHITECT),
+            )
+            callbacks_by_queue["tasks.backend"](
+                channel,
+                Mock(delivery_tag=2, redelivered=False),
+                None,
+                self._message(AgentRole.BACKEND),
+            )
+
+            self.assertTrue(first_started.wait(timeout=2))
+            self.assertFalse(second_started.is_set())
+            release_first.set()
+            settlements.get(timeout=2)()
+            self.assertTrue(second_started.wait(timeout=2))
+            settlements.get(timeout=2)()
+
+        channel.start_consuming.side_effect = start_consuming
+
+        RabbitMQTaskConsumer(rabbitmq_settings()).consume(
+            {
+                AgentRole.ARCHITECT: first_handler,
+                AgentRole.BACKEND: second_handler,
+            }
+        )
+
+        self.assertEqual(first_handler.handle.call_count, 1)
+        self.assertEqual(second_handler.handle.call_count, 1)
+        self.assertEqual(channel.basic_ack.call_count, 2)
+
+    @patch("core.infrastructure.rabbitmq.pika.BlockingConnection")
+    def test_logs_when_ack_cannot_be_scheduled_on_closed_connection(
+        self,
+        connection_factory,
+    ):
+        connection = connection_factory.return_value
+        connection.is_open = False
+        connection.add_callback_threadsafe.side_effect = RuntimeError(
+            "connection closed"
+        )
+        channel = connection.channel.return_value
+        channel.is_open = False
+        handler = Mock(spec=TaskHandler)
+
+        def start_consuming():
+            callback = channel.basic_consume.call_args.kwargs[
+                "on_message_callback"
+            ]
+            callback(
+                channel,
+                Mock(delivery_tag=168, redelivered=True),
+                None,
+                self._message(),
+            )
+
+        channel.start_consuming.side_effect = start_consuming
+
+        with self.assertLogs(
+            "core.infrastructure.rabbitmq",
+            level="ERROR",
+        ) as logs:
+            RabbitMQTaskConsumer(rabbitmq_settings()).consume(
+                {AgentRole.ARCHITECT: handler},
+            )
+
+        self.assertTrue(
+            any(
+                "could not schedule ACK" in message
+                and str(self.task_id) in message
+                and "delivery_tag=168" in message
+                and "redelivered=True" in message
+                for message in logs.output
+            )
+        )
+        channel.basic_ack.assert_not_called()
+        channel.basic_nack.assert_not_called()
+
+    @patch("core.infrastructure.rabbitmq.pika.BlockingConnection")
+    def test_logs_when_nack_cannot_be_scheduled_on_closed_connection(
+        self,
+        connection_factory,
+    ):
+        connection = connection_factory.return_value
+        connection.is_open = False
+        connection.add_callback_threadsafe.side_effect = RuntimeError(
+            "connection closed"
+        )
+        channel = connection.channel.return_value
+        channel.is_open = False
+        handler = Mock(spec=TaskHandler)
+        handler.handle.side_effect = RuntimeError("processing failed")
+
+        def start_consuming():
+            callback = channel.basic_consume.call_args.kwargs[
+                "on_message_callback"
+            ]
+            callback(
+                channel,
+                Mock(delivery_tag=210, redelivered=True),
+                None,
+                self._message(),
+            )
+
+        channel.start_consuming.side_effect = start_consuming
+
+        with self.assertLogs(
+            "core.infrastructure.rabbitmq",
+            level="ERROR",
+        ) as logs:
+            RabbitMQTaskConsumer(rabbitmq_settings()).consume(
+                {AgentRole.ARCHITECT: handler},
+            )
+
+        self.assertTrue(
+            any(
+                "could not schedule NACK" in message
+                and str(self.task_id) in message
+                and "delivery_tag=210" in message
+                and "redelivered=True" in message
+                for message in logs.output
+            )
+        )
+        channel.basic_ack.assert_not_called()
+        channel.basic_nack.assert_not_called()
 
 
 if __name__ == "__main__":

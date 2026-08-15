@@ -96,7 +96,7 @@ class EngineSettingsTests(unittest.TestCase):
         self.assertEqual(settings.litellm.base_url, "http://litellm:4000")
         self.assertEqual(settings.litellm.timeout_seconds, 240.0)
 
-    def test_litellm_timeout_defaults_to_180_seconds(self):
+    def test_litellm_timeout_defaults_to_600_seconds(self):
         settings = load_settings(
             {
                 "AGENTFORGE_DEFAULT_ENGINE": "litellm",
@@ -104,7 +104,7 @@ class EngineSettingsTests(unittest.TestCase):
             }
         )
 
-        self.assertEqual(settings.litellm.timeout_seconds, 180.0)
+        self.assertEqual(settings.litellm.timeout_seconds, 600.0)
 
 
 if __name__ == "__main__":

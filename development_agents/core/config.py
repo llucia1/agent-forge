@@ -51,7 +51,7 @@ def load_settings(
             base_url=source.get("LITELLM_BASE_URL", ""),
             api_key=source.get("LITELLM_API_KEY", ""),
             timeout_seconds=float(
-                source.get("LITELLM_TIMEOUT_SECONDS", "180")
+                source.get("LITELLM_TIMEOUT_SECONDS", "600")
             ),
         ),
     )
