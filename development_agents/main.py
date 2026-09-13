@@ -2,7 +2,9 @@ from pathlib import Path
 
 from agents.architect.agent import ArchitectAgent
 from agents.backend.agent import BackendAgent
+from agents.frontend.agent import FrontendAgent
 from agents.orchestrator.agent import OrchestratorAgent
+from agents.reviewer.agent import ReviewerAgent
 from core.config import load_settings
 from core.engines.model_resolver import ModelResolver
 from core.engines.resolver import EngineResolver
@@ -79,6 +81,22 @@ def main():
         engine=engine,
         context_provider=DefaultContextProvider(),
     )
+    frontend_agent = FrontendAgent(
+        task_status_writer=task_repository,
+        task_result_writer=task_result_repository,
+        project_reader=project_repository,
+        workspace=project_workspace,
+        engine=engine,
+        context_provider=DefaultContextProvider(),
+    )
+    reviewer_agent = ReviewerAgent(
+        task_status_writer=task_repository,
+        task_result_writer=task_result_repository,
+        project_reader=project_repository,
+        workspace_reader=project_workspace,
+        engine=engine,
+        context_provider=DefaultContextProvider(),
+    )
 
     project = orchestrator_agent.create_project(
         name="Demo Project",
@@ -99,6 +117,8 @@ def main():
         {
             AgentRole.ARCHITECT: architect_agent,
             AgentRole.BACKEND: backend_agent,
+            AgentRole.FRONTEND: frontend_agent,
+            AgentRole.REVIEWER: reviewer_agent,
         }
     )
 

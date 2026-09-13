@@ -70,12 +70,12 @@ class LayerDependencyTests(unittest.TestCase):
             f"{path.relative_to(SOURCE_ROOT)} imports outside its layer",
         )
 
-    def test_domain_depends_on_no_other_application_layer(self):
+    def test_domain_depends_only_on_domain_and_stdlib(self):
         for path in (SOURCE_ROOT / "core" / "models").rglob("*.py"):
             with self.subTest(path=path):
-                self.assert_imports_do_not_start_with(
+                self.assert_local_imports_within(
                     path,
-                    ("agents", "core"),
+                    ("core.models",),
                 )
 
     def test_contracts_depend_only_on_domain_contracts_and_stdlib(self):

@@ -11,102 +11,12 @@ from core.contracts.workspaces import (
     WorkspaceError,
 )
 from core.models.architecture import ArchitectureArtifact
-from core.models.backend_generation import (
+from core.models.workspace import (
+    EDITABLE_TEXT_FILE_NAMES,
+    EDITABLE_TEXT_SUFFIXES,
+    EXCLUDED_WORKSPACE_DIRECTORIES,
     WorkspaceFile,
     validate_workspace_path,
-)
-
-
-EXCLUDED_DIRECTORIES = frozenset(
-    {
-        ".cache",
-        ".git",
-        ".gradle",
-        ".mypy_cache",
-        ".next",
-        ".nox",
-        ".nuxt",
-        ".pytest_cache",
-        ".ruff_cache",
-        ".svelte-kit",
-        ".terraform",
-        ".tox",
-        "__pycache__",
-        "bin",
-        "build",
-        "cache",
-        "caches",
-        "coverage",
-        "dist",
-        "generated",
-        "generated_artifacts",
-        "htmlcov",
-        "node_modules",
-        "obj",
-        "out",
-        "target",
-        "vendor",
-    }
-)
-
-TEXT_FILE_NAMES = frozenset(
-    {
-        ".env.example",
-        "dockerfile",
-        "gemfile",
-        "license",
-        "makefile",
-        "procfile",
-        "readme",
-    }
-)
-
-TEXT_SUFFIXES = frozenset(
-    {
-        ".bash",
-        ".cfg",
-        ".conf",
-        ".cs",
-        ".css",
-        ".env.example",
-        ".fish",
-        ".go",
-        ".gradle",
-        ".graphql",
-        ".html",
-        ".ini",
-        ".java",
-        ".js",
-        ".json",
-        ".jsx",
-        ".kt",
-        ".kts",
-        ".less",
-        ".lock",
-        ".md",
-        ".php",
-        ".properties",
-        ".proto",
-        ".py",
-        ".pyi",
-        ".rb",
-        ".rs",
-        ".sass",
-        ".scala",
-        ".scss",
-        ".sh",
-        ".sql",
-        ".svelte",
-        ".toml",
-        ".ts",
-        ".tsx",
-        ".txt",
-        ".vue",
-        ".xml",
-        ".yaml",
-        ".yml",
-        ".zsh",
-    }
 )
 
 
@@ -233,11 +143,11 @@ class FilesystemProjectWorkspace(
             validate_workspace_path(workspace_file.relative_path)
             if workspace_file.relative_path == "architecture.json":
                 raise WorkspaceBoundaryError(
-                    "Backend files cannot overwrite architecture.json"
+                    "Project files cannot overwrite architecture.json"
                 )
             if workspace_file.relative_path in seen_paths:
                 raise WorkspaceBoundaryError(
-                    "Backend files contain duplicate paths"
+                    "Project files contain duplicate paths"
                 )
             seen_paths.add(workspace_file.relative_path)
             target = workspace.joinpath(
@@ -254,14 +164,14 @@ class FilesystemProjectWorkspace(
             self._atomic_write(
                 safe_target,
                 workspace_file.content,
-                f"backend file {workspace_file.relative_path}",
+                f"project file {workspace_file.relative_path}",
             )
 
     @staticmethod
     def _include_directory(path: Path, name: str) -> bool:
         normalized_name = name.casefold()
         return (
-            normalized_name not in EXCLUDED_DIRECTORIES
+            normalized_name not in EXCLUDED_WORKSPACE_DIRECTORIES
             and not normalized_name.endswith("_cache")
             and not path.is_symlink()
         )
@@ -293,11 +203,11 @@ class FilesystemProjectWorkspace(
     @staticmethod
     def _is_text_file(path: Path) -> bool:
         normalized_name = path.name.casefold()
-        if normalized_name in TEXT_FILE_NAMES:
+        if normalized_name in EDITABLE_TEXT_FILE_NAMES:
             return True
         return any(
             normalized_name.endswith(suffix)
-            for suffix in TEXT_SUFFIXES
+            for suffix in EDITABLE_TEXT_SUFFIXES
         )
 
     @staticmethod

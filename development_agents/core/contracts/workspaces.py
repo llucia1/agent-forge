@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 from uuid import UUID
 
 from core.models.architecture import ArchitectureArtifact
-from core.models.backend_generation import WorkspaceFile
+from core.models.workspace import WorkspaceFile
 
 
 class WorkspaceError(RuntimeError):
@@ -29,7 +29,7 @@ class ArchitectureArtifactWriter(ABC):
         """Persist one validated architecture artifact for a project."""
 
 
-class ProjectCodeWorkspace(ABC):
+class ProjectCodeReader(ABC):
     @abstractmethod
     def read_architecture(
         self,
@@ -41,6 +41,8 @@ class ProjectCodeWorkspace(ABC):
     def read_files(self, project_id: UUID) -> list[WorkspaceFile]:
         """Read relevant source and text files owned by one project."""
 
+
+class ProjectCodeWorkspace(ProjectCodeReader):
     @abstractmethod
     def write_files(
         self,

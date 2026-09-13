@@ -6,72 +6,73 @@ from typing import Any
 from core.models.workspace import (
     WorkspaceFile,
     WorkspacePathValidationError,
+    is_editable_workspace_path,
 )
 
 
-class BackendGenerationValidationError(ValueError):
-    """Raised when a backend engine output violates its contract."""
+class FrontendGenerationValidationError(ValueError):
+    """Raised when a frontend engine output violates its contract."""
 
 
-class BackendGenerationStatus(StrEnum):
+class FrontendGenerationStatus(StrEnum):
     COMPLETE = "complete"
     NEEDS_INPUT = "needs_input"
 
 
 @dataclass(frozen=True)
-class BackendGenerationArtifact:
+class FrontendGenerationArtifact:
     version: int
-    status: BackendGenerationStatus
+    status: FrontendGenerationStatus
     missing_decisions: list[str]
-    backend_stack: dict[str, Any]
-    backend_architecture: dict[str, Any]
+    frontend_stack: dict[str, Any]
+    frontend_architecture: dict[str, Any]
     infrastructure: dict[str, Any]
     technical_constraints: list[str]
     files: list[WorkspaceFile]
     summary: str
 
     @classmethod
-    def from_json(cls, raw_output: str) -> "BackendGenerationArtifact":
+    def from_json(cls, raw_output: str) -> "FrontendGenerationArtifact":
         try:
             payload = json.loads(
                 raw_output,
                 parse_constant=_reject_non_json_constant,
             )
         except (TypeError, ValueError, json.JSONDecodeError) as error:
-            raise BackendGenerationValidationError(
-                "Backend output must be strict JSON"
+            raise FrontendGenerationValidationError(
+                "Frontend output must be strict JSON"
             ) from error
 
         if not isinstance(payload, dict):
-            raise BackendGenerationValidationError(
-                "Backend output must be a JSON object"
+            raise FrontendGenerationValidationError(
+                "Frontend output must be a JSON object"
             )
 
         required_fields = set(cls.required_fields())
         missing_fields = sorted(required_fields.difference(payload))
         if missing_fields:
-            raise BackendGenerationValidationError(
-                "Backend output is missing required fields: "
+            raise FrontendGenerationValidationError(
+                "Frontend output is missing required fields: "
                 + ", ".join(missing_fields)
             )
 
         unknown_fields = sorted(set(payload).difference(required_fields))
         if unknown_fields:
-            raise BackendGenerationValidationError(
-                "Backend output contains unknown fields: "
+            raise FrontendGenerationValidationError(
+                "Frontend output contains unknown fields: "
                 + ", ".join(unknown_fields)
             )
 
         if type(payload["version"]) is not int or payload["version"] != 1:
-            raise BackendGenerationValidationError(
-                "Backend output version must be the integer 1"
+            raise FrontendGenerationValidationError(
+                "Frontend output version must be the integer 1"
             )
 
         try:
-            status = BackendGenerationStatus(payload["status"])
+            status = FrontendGenerationStatus(payload["status"])
         except (TypeError, ValueError) as error:
-            raise BackendGenerationValidationError(
-                "Backend output status must be complete or needs_input"
+            raise FrontendGenerationValidationError(
+                "Frontend output status must be complete or needs_input"
             ) from error
 
         missing_decisions = payload["missing_decisions"]
@@ -79,97 +80,70 @@ class BackendGenerationArtifact:
             isinstance(item, str) and item.strip()
             for item in missing_decisions
         ):
-            raise BackendGenerationValidationError(
-                "Backend field missing_decisions must be an array of "
+            raise FrontendGenerationValidationError(
+                "Frontend field missing_decisions must be an array of "
                 "non-empty strings"
             )
         if len(set(missing_decisions)) != len(missing_decisions):
-            raise BackendGenerationValidationError(
-                "Backend field missing_decisions must not contain duplicates"
+            raise FrontendGenerationValidationError(
+                "Frontend field missing_decisions must not contain duplicates"
             )
 
         object_fields = (
-            "backend_stack",
-            "backend_architecture",
+            "frontend_stack",
+            "frontend_architecture",
             "infrastructure",
         )
         for field_name in object_fields:
             if not isinstance(payload[field_name], dict):
-                raise BackendGenerationValidationError(
-                    f"Backend field {field_name} must be an object"
+                raise FrontendGenerationValidationError(
+                    f"Frontend field {field_name} must be an object"
                 )
 
         constraints = payload["technical_constraints"]
         if not isinstance(constraints, list) or not all(
             isinstance(item, str) for item in constraints
         ):
-            raise BackendGenerationValidationError(
-                "Backend field technical_constraints must be "
+            raise FrontendGenerationValidationError(
+                "Frontend field technical_constraints must be "
                 "an array of strings"
             )
 
         summary = payload["summary"]
         if not isinstance(summary, str) or not summary.strip():
-            raise BackendGenerationValidationError(
-                "Backend field summary must be a non-empty string"
+            raise FrontendGenerationValidationError(
+                "Frontend field summary must be a non-empty string"
             )
 
         raw_files = payload["files"]
         if not isinstance(raw_files, list):
-            raise BackendGenerationValidationError(
-                "Backend field files must be an array"
+            raise FrontendGenerationValidationError(
+                "Frontend field files must be an array"
             )
 
         files = []
         for index, raw_file in enumerate(raw_files):
-            if not isinstance(raw_file, dict):
-                raise BackendGenerationValidationError(
-                    f"Backend file at index {index} must be an object"
-                )
-            if set(raw_file) != {"path", "content"}:
-                raise BackendGenerationValidationError(
-                    f"Backend file at index {index} must contain only "
-                    "path and content"
-                )
-            if not isinstance(raw_file["content"], str) or not raw_file[
-                "content"
-            ].strip():
-                raise BackendGenerationValidationError(
-                    f"Backend file at index {index} must contain text"
-                )
-            try:
-                workspace_file = WorkspaceFile(
-                    relative_path=raw_file["path"],
-                    content=raw_file["content"],
-                )
-            except (TypeError, WorkspacePathValidationError) as error:
-                raise BackendGenerationValidationError(
-                    f"Backend file at index {index} has an unsafe path"
-                ) from error
-            if workspace_file.relative_path == "architecture.json":
-                raise BackendGenerationValidationError(
-                    "Backend output cannot overwrite architecture.json"
-                )
+            workspace_file = cls._parse_file(raw_file, index)
             files.append(workspace_file)
 
         paths = [workspace_file.relative_path for workspace_file in files]
         if len(set(paths)) != len(paths):
-            raise BackendGenerationValidationError(
-                "Backend output contains duplicate file paths"
+            raise FrontendGenerationValidationError(
+                "Frontend output contains duplicate file paths"
             )
 
-        if status is BackendGenerationStatus.COMPLETE:
+        if status is FrontendGenerationStatus.COMPLETE:
             if missing_decisions:
-                raise BackendGenerationValidationError(
-                    "A complete backend output cannot have missing decisions"
+                raise FrontendGenerationValidationError(
+                    "A complete frontend output cannot have missing decisions"
                 )
             if not files:
-                raise BackendGenerationValidationError(
-                    "A complete backend output must contain files"
+                raise FrontendGenerationValidationError(
+                    "A complete frontend output must contain files"
                 )
         elif not missing_decisions or files:
-            raise BackendGenerationValidationError(
-                "A needs_input backend output requires missing decisions "
+            raise FrontendGenerationValidationError(
+                "A needs_input frontend output requires missing decisions "
                 "and cannot contain files"
             )
 
@@ -177,8 +151,8 @@ class BackendGenerationArtifact:
             version=payload["version"],
             status=status,
             missing_decisions=missing_decisions,
-            backend_stack=payload["backend_stack"],
-            backend_architecture=payload["backend_architecture"],
+            frontend_stack=payload["frontend_stack"],
+            frontend_architecture=payload["frontend_architecture"],
             infrastructure=payload["infrastructure"],
             technical_constraints=constraints,
             files=files,
@@ -186,13 +160,59 @@ class BackendGenerationArtifact:
         )
 
     @staticmethod
+    def _parse_file(raw_file: Any, index: int) -> WorkspaceFile:
+        if not isinstance(raw_file, dict):
+            raise FrontendGenerationValidationError(
+                f"Frontend file at index {index} must be an object"
+            )
+        if set(raw_file) != {"path", "content"}:
+            raise FrontendGenerationValidationError(
+                f"Frontend file at index {index} must contain only "
+                "path and content"
+            )
+        if not isinstance(raw_file["content"], str) or not raw_file[
+            "content"
+        ].strip():
+            raise FrontendGenerationValidationError(
+                f"Frontend file at index {index} must contain text"
+            )
+
+        try:
+            workspace_file = WorkspaceFile(
+                relative_path=raw_file["path"],
+                content=raw_file["content"],
+            )
+            editable = is_editable_workspace_path(
+                workspace_file.relative_path
+            )
+        except (TypeError, WorkspacePathValidationError) as error:
+            raise FrontendGenerationValidationError(
+                f"Frontend file at index {index} has an unsafe path"
+            ) from error
+
+        if not workspace_file.relative_path.startswith("frontend/"):
+            raise FrontendGenerationValidationError(
+                "Frontend output files must be under frontend/"
+            )
+        if workspace_file.relative_path.endswith("/architecture.json"):
+            raise FrontendGenerationValidationError(
+                "Frontend output cannot write architecture.json"
+            )
+        if not editable:
+            raise FrontendGenerationValidationError(
+                f"Frontend file at index {index} is not an editable "
+                "text or source file"
+            )
+        return workspace_file
+
+    @staticmethod
     def required_fields() -> tuple[str, ...]:
         return (
             "version",
             "status",
             "missing_decisions",
-            "backend_stack",
-            "backend_architecture",
+            "frontend_stack",
+            "frontend_architecture",
             "infrastructure",
             "technical_constraints",
             "files",
@@ -204,8 +224,10 @@ class BackendGenerationArtifact:
         return {
             "instruction": (
                 "Return only one strict JSON object. Generate real source "
-                "files with relative POSIX paths and complete text content. "
-                "Do not use Markdown or code fences."
+                "and editable text files under frontend/ using relative "
+                "POSIX paths and complete text content. Do not use Markdown "
+                "or code fences. Do not write dependency, cache, build or "
+                "generated-artifact directories."
             ),
             "type": "object",
             "required": list(cls.required_fields()),
@@ -219,8 +241,8 @@ class BackendGenerationArtifact:
                     "type": "array",
                     "items": {"type": "string"},
                 },
-                "backend_stack": {"type": "object"},
-                "backend_architecture": {"type": "object"},
+                "frontend_stack": {"type": "object"},
+                "frontend_architecture": {"type": "object"},
                 "infrastructure": {"type": "object"},
                 "technical_constraints": {
                     "type": "array",
@@ -232,7 +254,10 @@ class BackendGenerationArtifact:
                         "type": "object",
                         "required": ["path", "content"],
                         "properties": {
-                            "path": {"type": "string"},
+                            "path": {
+                                "type": "string",
+                                "pattern": "^frontend/",
+                            },
                             "content": {"type": "string"},
                         },
                         "additionalProperties": False,
@@ -248,8 +273,8 @@ class BackendGenerationArtifact:
             "version": self.version,
             "status": str(self.status),
             "missing_decisions": self.missing_decisions,
-            "backend_stack": self.backend_stack,
-            "backend_architecture": self.backend_architecture,
+            "frontend_stack": self.frontend_stack,
+            "frontend_architecture": self.frontend_architecture,
             "infrastructure": self.infrastructure,
             "technical_constraints": self.technical_constraints,
             "files": [

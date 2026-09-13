@@ -8,19 +8,22 @@ from core.contracts.repositories import ProjectReader, TaskStatusWriter
 from core.contracts.results import TaskResultWriter
 from core.contracts.workspaces import ProjectCodeWorkspace
 from core.models.architecture import ArchitectureArtifact, ArchitectureStatus
-from core.models.backend_generation import (
-    BackendGenerationArtifact,
-    BackendGenerationStatus,
-    BackendGenerationValidationError,
+from core.models.frontend_generation import (
+    FrontendGenerationArtifact,
+    FrontendGenerationStatus,
+    FrontendGenerationValidationError,
 )
 from core.models.project import Project
 from core.models.task import Task, TaskStatus
 from core.models.task_result import TaskExecutionResult
-from core.models.workspace import WorkspaceFile
+from core.models.workspace import (
+    WorkspaceFile,
+    is_editable_workspace_path,
+)
 
 
-class BackendProjectNotFoundError(LookupError):
-    """Raised when a backend task references an unknown project."""
+class FrontendProjectNotFoundError(LookupError):
+    """Raised when a frontend task references an unknown project."""
 
 
 ARCHITECTURE_AUTHORITATIVE_FIELDS = (
@@ -32,21 +35,21 @@ ARCHITECTURE_AUTHORITATIVE_FIELDS = (
     "technical_constraints",
 )
 
-BACKEND_AUTHORITATIVE_FIELDS = (
-    "backend_stack",
-    "backend_architecture",
+FRONTEND_AUTHORITATIVE_FIELDS = (
+    "frontend_stack",
+    "frontend_architecture",
     "infrastructure",
     "technical_constraints",
 )
 
-REQUIRED_BACKEND_FIELDS = (
-    "backend_stack",
-    "backend_architecture",
+REQUIRED_FRONTEND_FIELDS = (
+    "frontend_stack",
+    "frontend_architecture",
     "infrastructure",
 )
 
 
-class BackendAgent(TaskHandler):
+class FrontendAgent(TaskHandler):
     def __init__(
         self,
         task_status_writer: TaskStatusWriter,
@@ -64,12 +67,11 @@ class BackendAgent(TaskHandler):
         self.context_provider = context_provider
 
     def handle(self, task: Task) -> None:
-        self._update_status(task, TaskStatus.IN_PROGRESS)
-
         try:
+            self._update_status(task, TaskStatus.IN_PROGRESS)
             project = self.project_reader.find_by_id(task.project_id)
             if project is None:
-                raise BackendProjectNotFoundError(
+                raise FrontendProjectNotFoundError(
                     f"Project not found: {task.project_id}"
                 )
 
@@ -93,7 +95,7 @@ class BackendAgent(TaskHandler):
 
             missing_decisions = [
                 field_name
-                for field_name in REQUIRED_BACKEND_FIELDS
+                for field_name in REQUIRED_FRONTEND_FIELDS
                 if not getattr(project, field_name)
             ]
             if missing_decisions:
@@ -104,20 +106,29 @@ class BackendAgent(TaskHandler):
                 )
                 return
 
-            existing_files = self.workspace.read_files(task.project_id)
+            existing_files = [
+                workspace_file
+                for workspace_file in self.workspace.read_files(
+                    task.project_id
+                )
+                if workspace_file.relative_path.startswith("frontend/")
+                and is_editable_workspace_path(
+                    workspace_file.relative_path
+                )
+            ]
             engine_result = self.process(
                 task,
                 project,
                 architecture,
                 existing_files,
             )
-            generation = BackendGenerationArtifact.from_json(
+            generation = FrontendGenerationArtifact.from_json(
                 engine_result.output
             )
-            self._validate_backend_authority(project, generation)
+            self._validate_frontend_authority(project, generation)
             self._persist_result(task, engine_result, generation)
 
-            if generation.status is BackendGenerationStatus.NEEDS_INPUT:
+            if generation.status is FrontendGenerationStatus.NEEDS_INPUT:
                 self._update_status(task, TaskStatus.NEEDS_INPUT)
                 return
 
@@ -140,7 +151,7 @@ class BackendAgent(TaskHandler):
         context = {
             **self.context_provider.build(task, project),
             "output_contract": self._output_contract(project),
-            "backend_implementation": self._implementation_context(
+            "frontend_implementation": self._implementation_context(
                 project,
                 architecture,
                 existing_files,
@@ -158,16 +169,16 @@ class BackendAgent(TaskHandler):
         project: Project,
         missing_decisions: list[str],
     ) -> None:
-        generation = BackendGenerationArtifact(
+        generation = FrontendGenerationArtifact(
             version=1,
-            status=BackendGenerationStatus.NEEDS_INPUT,
+            status=FrontendGenerationStatus.NEEDS_INPUT,
             missing_decisions=missing_decisions,
-            backend_stack=dict(project.backend_stack),
-            backend_architecture=dict(project.backend_architecture),
+            frontend_stack=dict(project.frontend_stack),
+            frontend_architecture=dict(project.frontend_architecture),
             infrastructure=dict(project.infrastructure),
             technical_constraints=list(project.technical_constraints),
             files=[],
-            summary="Backend generation requires architecture decisions",
+            summary="Frontend generation requires architecture decisions",
         )
         result = EngineResult(
             output=generation.to_json(),
@@ -182,7 +193,7 @@ class BackendAgent(TaskHandler):
         self,
         task: Task,
         engine_result: EngineResult,
-        generation: BackendGenerationArtifact,
+        generation: FrontendGenerationArtifact,
     ) -> None:
         self.task_result_writer.write(
             TaskExecutionResult(
@@ -197,16 +208,16 @@ class BackendAgent(TaskHandler):
         )
 
     @staticmethod
-    def _authoritative_backend(project: Project) -> dict[str, Any]:
+    def _authoritative_frontend(project: Project) -> dict[str, Any]:
         return {
             field_name: getattr(project, field_name)
-            for field_name in BACKEND_AUTHORITATIVE_FIELDS
+            for field_name in FRONTEND_AUTHORITATIVE_FIELDS
         }
 
     @classmethod
     def _output_contract(cls, project: Project) -> dict[str, Any]:
-        contract = BackendGenerationArtifact.output_contract()
-        authoritative = cls._authoritative_backend(project)
+        contract = FrontendGenerationArtifact.output_contract()
+        authoritative = cls._authoritative_frontend(project)
         properties = contract["properties"]
         for field_name, value in authoritative.items():
             field_contract = dict(properties[field_name])
@@ -216,10 +227,10 @@ class BackendAgent(TaskHandler):
         contract["instruction"] = (
             f"{contract['instruction']} The Project and validated "
             "architecture artifact are authoritative. Copy all technical "
-            "fields exactly. Use only their languages, frameworks, databases, "
-            "infrastructure and architecture rules. Implement those rules in "
-            "real file structure, responsibilities and dependency direction, "
-            "not only in comments. If a required decision is absent, return "
+            "fields exactly. Use only their languages, frameworks, primary "
+            "libraries, infrastructure and architecture rules. Implement "
+            "those rules in real file structure and responsibilities, not "
+            "only in comments. If a required decision is absent, return "
             "needs_input with no files."
         )
         return contract
@@ -233,17 +244,17 @@ class BackendAgent(TaskHandler):
     ) -> dict[str, Any]:
         mandatory_rules = [
             {
-                "source": "backend_stack",
+                "source": "frontend_stack",
                 "requirement": json.dumps(
-                    project.backend_stack,
+                    project.frontend_stack,
                     ensure_ascii=False,
                     sort_keys=True,
                 ),
             },
             {
-                "source": "backend_architecture",
+                "source": "frontend_architecture",
                 "requirement": json.dumps(
-                    project.backend_architecture,
+                    project.frontend_architecture,
                     ensure_ascii=False,
                     sort_keys=True,
                 ),
@@ -292,27 +303,27 @@ class BackendAgent(TaskHandler):
             )
         ]
         if mismatches:
-            raise BackendGenerationValidationError(
+            raise FrontendGenerationValidationError(
                 "Architecture artifact contradicts Project fields: "
                 + ", ".join(mismatches)
             )
 
     @classmethod
-    def _validate_backend_authority(
+    def _validate_frontend_authority(
         cls,
         project: Project,
-        generation: BackendGenerationArtifact,
+        generation: FrontendGenerationArtifact,
     ) -> None:
         mismatches = [
             field_name
-            for field_name, expected in cls._authoritative_backend(
+            for field_name, expected in cls._authoritative_frontend(
                 project
             ).items()
             if getattr(generation, field_name) != expected
         ]
         if mismatches:
-            raise BackendGenerationValidationError(
-                "Backend output contradicts authoritative Project fields: "
+            raise FrontendGenerationValidationError(
+                "Frontend output contradicts authoritative Project fields: "
                 + ", ".join(mismatches)
             )
 

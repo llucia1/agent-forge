@@ -93,6 +93,14 @@ class EngineSettingsTests(unittest.TestCase):
             settings.rabbitmq.task_queues[AgentRole.ARCHITECT],
             "tasks.architect",
         )
+        self.assertEqual(
+            settings.rabbitmq.task_queues[AgentRole.FRONTEND],
+            "tasks.frontend",
+        )
+        self.assertEqual(
+            settings.rabbitmq.task_queues[AgentRole.REVIEWER],
+            "tasks.reviewer",
+        )
         self.assertEqual(settings.litellm.base_url, "http://litellm:4000")
         self.assertEqual(settings.litellm.timeout_seconds, 240.0)
 

@@ -8,6 +8,7 @@ from uuid import UUID
 
 from core.contracts.workspaces import (
     ArchitectureArtifactWriter,
+    ProjectCodeReader,
     ProjectCodeWorkspace,
     ProjectWorkspaceInitializer,
     WorkspaceBoundaryError,
@@ -15,7 +16,7 @@ from core.contracts.workspaces import (
 )
 from core.infrastructure.workspace import FilesystemProjectWorkspace
 from core.models.architecture import ArchitectureArtifact
-from core.models.backend_generation import WorkspaceFile
+from core.models.workspace import WorkspaceFile
 
 
 PROJECT_ID = UUID("93de5ea5-729a-4c5e-8dc3-443165ed516b")
@@ -51,6 +52,7 @@ class FilesystemProjectWorkspaceTests(unittest.TestCase):
 
         self.assertIsInstance(workspace, ProjectWorkspaceInitializer)
         self.assertIsInstance(workspace, ArchitectureArtifactWriter)
+        self.assertIsInstance(workspace, ProjectCodeReader)
         self.assertIsInstance(workspace, ProjectCodeWorkspace)
 
     def test_initializes_only_the_project_uuid_directory_idempotently(self):
@@ -165,6 +167,7 @@ class FilesystemProjectWorkspaceTests(unittest.TestCase):
                 "backend/settings.toml": "enabled = true\n",
                 "Dockerfile": "FROM python:3.12\n",
                 ".env.example": "DATABASE_URL=example\n",
+                ".gitignore": "dist/\n",
             }
             for relative_path, content in included.items():
                 target = project_root / relative_path

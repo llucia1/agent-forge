@@ -12,6 +12,8 @@ class AgentContext(TypedDict, total=False):
     rag_context: Any | None
     output_contract: dict[str, Any]
     backend_implementation: dict[str, Any]
+    frontend_implementation: dict[str, Any]
+    review: dict[str, Any]
 
 
 class ContextProvider(ABC):
