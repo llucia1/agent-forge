@@ -10,6 +10,7 @@ from core.contracts.configuration import (
     LiteLLMSettings,
     RabbitMQSettings,
 )
+from core.models.qa import ExecutableRule, QAExecutionPolicy
 from core.models.task import AgentRole
 
 
@@ -54,6 +55,87 @@ def load_settings(
                 source.get("LITELLM_TIMEOUT_SECONDS", "600")
             ),
         ),
+        qa_execution=_load_qa_execution_policy(source),
+    )
+
+
+def _load_qa_execution_policy(
+    source: Mapping[str, str],
+) -> QAExecutionPolicy:
+    setting_name = "AGENTFORGE_QA_EXECUTABLE_POLICY"
+    raw_value = source.get(setting_name, "{}")
+    try:
+        payload = json.loads(raw_value)
+    except json.JSONDecodeError as error:
+        raise ConfigurationError(
+            f"{setting_name} must be a valid JSON object"
+        ) from error
+    if not isinstance(payload, dict):
+        raise ConfigurationError(f"{setting_name} must be a JSON object")
+
+    rules = []
+    expected_fields = {
+        "allowed_arguments",
+        "allowed_working_directories",
+        "max_timeout_seconds",
+    }
+    for executable, raw_rule in payload.items():
+        if (
+            not isinstance(executable, str)
+            or not executable.strip()
+            or "/" in executable
+            or "\\" in executable
+        ):
+            raise ConfigurationError(
+                f"{setting_name} executable names must be bare names"
+            )
+        if not isinstance(raw_rule, dict) or set(raw_rule) != expected_fields:
+            raise ConfigurationError(
+                f"{setting_name} rule for {executable} has invalid fields"
+            )
+        allowed_arguments = raw_rule["allowed_arguments"]
+        if not isinstance(allowed_arguments, list) or not all(
+            isinstance(arguments, list)
+            and all(isinstance(argument, str) for argument in arguments)
+            for arguments in allowed_arguments
+        ):
+            raise ConfigurationError(
+                f"{setting_name} allowed_arguments must be arrays of strings"
+            )
+        working_directories = raw_rule["allowed_working_directories"]
+        if not isinstance(working_directories, list) or not all(
+            isinstance(directory, str) and directory
+            for directory in working_directories
+        ):
+            raise ConfigurationError(
+                f"{setting_name} working directories must be strings"
+            )
+        timeout = raw_rule["max_timeout_seconds"]
+        if type(timeout) is not int or timeout <= 0:
+            raise ConfigurationError(
+                f"{setting_name} timeouts must be positive integers"
+            )
+        rules.append(
+            ExecutableRule(
+                executable=executable,
+                allowed_arguments=tuple(
+                    tuple(arguments) for arguments in allowed_arguments
+                ),
+                allowed_working_directories=tuple(working_directories),
+                max_timeout_seconds=timeout,
+            )
+        )
+    max_output_bytes = int(
+        source.get("AGENTFORGE_QA_MAX_OUTPUT_BYTES", "65536")
+    )
+    if max_output_bytes <= 0:
+        raise ConfigurationError(
+            "AGENTFORGE_QA_MAX_OUTPUT_BYTES must be positive"
+        )
+    return QAExecutionPolicy(
+        executable_rules=tuple(rules),
+        max_output_bytes=max_output_bytes,
+        network_access=False,
     )
 
 

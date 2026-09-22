@@ -4,10 +4,11 @@ from unittest.mock import call, patch
 from uuid import UUID
 
 from core.contracts.configuration import DatabaseSettings
-from core.contracts.results import TaskResultWriter
+from core.contracts.results import LatestTaskExecutionReader, TaskResultWriter
 from core.infrastructure.repositories.task_result_repository import (
     PostgresTaskResultRepository,
 )
+from core.models.task import AgentRole, TaskStatus
 from core.models.task_result import TaskExecutionResult
 
 
@@ -70,3 +71,35 @@ class TaskResultRepositoryTests(unittest.TestCase):
             ),
         )
         self.assertEqual(jsonb.call_args_list, [call(result.metadata)])
+
+    @patch(
+        "core.infrastructure.repositories.task_result_repository.psycopg.connect"
+    )
+    def test_reads_latest_agent_task_even_when_result_is_absent(self, connect):
+        task_id = UUID("2cb5fe26-74a0-48f1-a989-aaf9b41b343b")
+        project_id = UUID("93de5ea5-729a-4c5e-8dc3-443165ed516b")
+        connection = connect.return_value.__enter__.return_value
+        cursor = connection.cursor.return_value.__enter__.return_value
+        cursor.fetchone.return_value = (
+            task_id,
+            project_id,
+            "reviewer",
+            "in_progress",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        repository = PostgresTaskResultRepository(self.settings)
+
+        execution = repository.find_latest(project_id, AgentRole.REVIEWER)
+
+        self.assertIsInstance(repository, LatestTaskExecutionReader)
+        self.assertEqual(execution.task_id, task_id)
+        self.assertEqual(execution.task_status, TaskStatus.IN_PROGRESS)
+        self.assertIsNone(execution.result)
+        _, parameters = cursor.execute.call_args.args
+        self.assertEqual(parameters, (project_id, "reviewer"))

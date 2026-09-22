@@ -7,6 +7,50 @@ MAIN_PATH = Path(__file__).resolve().parents[1] / "main.py"
 
 
 class MainCompositionTests(unittest.TestCase):
+    def test_composes_qa_with_executor_and_routes_qa_tasks(self):
+        tree = ast.parse(
+            MAIN_PATH.read_text(encoding="utf-8"),
+            filename=str(MAIN_PATH),
+        )
+        assignments = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Assign)
+            and any(
+                isinstance(target, ast.Name) and target.id == "qa_agent"
+                for target in node.targets
+            )
+            and isinstance(node.value, ast.Call)
+            and isinstance(node.value.func, ast.Name)
+            and node.value.func.id == "QAAgent"
+        ]
+        self.assertEqual(len(assignments), 1)
+        keyword_names = {
+            keyword.arg for keyword in assignments[0].value.keywords
+        }
+        self.assertIn("workspace_reader", keyword_names)
+        self.assertIn("executor", keyword_names)
+        self.assertNotIn("workspace", keyword_names)
+        mappings = [
+            argument
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "consume"
+            for argument in node.args
+            if isinstance(argument, ast.Dict)
+        ]
+        mapping = mappings[0]
+        self.assertTrue(
+            any(
+                isinstance(key, ast.Attribute)
+                and key.attr == "QA"
+                and isinstance(value, ast.Name)
+                and value.id == "qa_agent"
+                for key, value in zip(mapping.keys, mapping.values)
+            )
+        )
+
     def test_composes_frontend_agent_and_routes_frontend_tasks(self):
         tree = ast.parse(
             MAIN_PATH.read_text(encoding="utf-8"),

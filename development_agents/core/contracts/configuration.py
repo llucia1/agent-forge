@@ -3,6 +3,7 @@ from typing import Mapping
 from uuid import UUID
 
 from core.models.task import AgentRole
+from core.models.qa import QAExecutionPolicy
 
 
 @dataclass(frozen=True)
@@ -44,3 +45,4 @@ class ApplicationSettings:
     rabbitmq: RabbitMQSettings
     engine: EngineSettings
     litellm: LiteLLMSettings
+    qa_execution: QAExecutionPolicy

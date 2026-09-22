@@ -152,6 +152,14 @@ class LayerDependencyTests(unittest.TestCase):
                     ("os", "pathlib", "shutil", "tempfile"),
                 )
 
+    def test_agents_do_not_import_process_or_container_modules(self):
+        for path in (SOURCE_ROOT / "agents").rglob("*.py"):
+            with self.subTest(path=path):
+                self.assert_imports_do_not_start_with(
+                    path,
+                    ("subprocess", "docker"),
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

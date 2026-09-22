@@ -114,6 +114,37 @@ class EngineSettingsTests(unittest.TestCase):
 
         self.assertEqual(settings.litellm.timeout_seconds, 600.0)
 
+    def test_qa_execution_policy_is_explicit_and_deny_by_default(self):
+        settings = load_settings(
+            {
+                "AGENTFORGE_DEFAULT_ENGINE": "litellm",
+                "AGENTFORGE_DEFAULT_MODEL": "general-default",
+            }
+        )
+
+        self.assertEqual(settings.qa_execution.executable_rules, ())
+        self.assertFalse(settings.qa_execution.network_access)
+        self.assertEqual(settings.qa_execution.max_output_bytes, 65536)
+
+    def test_loads_exact_qa_executable_policy(self):
+        settings = load_settings(
+            {
+                "AGENTFORGE_DEFAULT_ENGINE": "litellm",
+                "AGENTFORGE_DEFAULT_MODEL": "general-default",
+                "AGENTFORGE_QA_EXECUTABLE_POLICY": (
+                    '{"quality-tool":{"allowed_arguments":[["verify"]],'
+                    '"allowed_working_directories":["backend"],'
+                    '"max_timeout_seconds":30}}'
+                ),
+                "AGENTFORGE_QA_MAX_OUTPUT_BYTES": "2048",
+            }
+        )
+
+        rule = settings.qa_execution.executable_rules[0]
+        self.assertEqual(rule.executable, "quality-tool")
+        self.assertEqual(rule.allowed_arguments, (("verify",),))
+        self.assertFalse(settings.qa_execution.network_access)
+
 
 if __name__ == "__main__":
     unittest.main()

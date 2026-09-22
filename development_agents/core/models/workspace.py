@@ -1,5 +1,12 @@
+import hashlib
+import unicodedata
 from dataclasses import dataclass
 from pathlib import PurePosixPath
+from struct import pack
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from core.models.architecture import ArchitectureArtifact
 
 
 EXCLUDED_WORKSPACE_DIRECTORIES = frozenset(
@@ -157,3 +164,78 @@ class WorkspaceFile:
         validate_workspace_path(self.relative_path)
         if not isinstance(self.content, str):
             raise TypeError("Workspace file content must be text")
+
+
+WORKSPACE_FINGERPRINT_PREFIX = b"agentforge-workspace-fingerprint-v1\0"
+
+
+@dataclass(frozen=True)
+class ProjectSnapshot:
+    architecture: "ArchitectureArtifact"
+    files: tuple[WorkspaceFile, ...]
+
+    @classmethod
+    def create(
+        cls,
+        architecture: "ArchitectureArtifact",
+        files: list[WorkspaceFile],
+    ) -> "ProjectSnapshot":
+        normalized_paths = set()
+        for workspace_file in files:
+            normalized_path = unicodedata.normalize(
+                "NFC",
+                workspace_file.relative_path,
+            )
+            if normalized_path == "architecture.json":
+                raise WorkspacePathValidationError(
+                    "Project snapshot files cannot contain architecture.json"
+                )
+            if normalized_path in normalized_paths:
+                raise WorkspacePathValidationError(
+                    "Project snapshot contains duplicate normalized paths"
+                )
+            normalized_paths.add(normalized_path)
+
+        return cls(
+            architecture=architecture,
+            files=tuple(
+                sorted(
+                    files,
+                    key=lambda item: unicodedata.normalize(
+                        "NFC",
+                        item.relative_path,
+                    ).encode("utf-8"),
+                )
+            ),
+        )
+
+    @property
+    def fingerprint(self) -> str:
+        digest = hashlib.sha256()
+        digest.update(WORKSPACE_FINGERPRINT_PREFIX)
+        self._update_digest(
+            digest,
+            "architecture.json",
+            self.architecture.to_json(),
+        )
+        for workspace_file in self.files:
+            self._update_digest(
+                digest,
+                workspace_file.relative_path,
+                workspace_file.content,
+            )
+        return f"sha256:{digest.hexdigest()}"
+
+    @staticmethod
+    def _update_digest(
+        digest: "hashlib._Hash",
+        relative_path: str,
+        content: str,
+    ) -> None:
+        normalized_path = unicodedata.normalize("NFC", relative_path)
+        path_bytes = normalized_path.encode("utf-8")
+        content_bytes = content.encode("utf-8")
+        digest.update(pack(">Q", len(path_bytes)))
+        digest.update(path_bytes)
+        digest.update(pack(">Q", len(content_bytes)))
+        digest.update(content_bytes)

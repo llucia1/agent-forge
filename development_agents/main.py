@@ -4,6 +4,7 @@ from agents.architect.agent import ArchitectAgent
 from agents.backend.agent import BackendAgent
 from agents.frontend.agent import FrontendAgent
 from agents.orchestrator.agent import OrchestratorAgent
+from agents.qa.agent import QAAgent
 from agents.reviewer.agent import ReviewerAgent
 from core.config import load_settings
 from core.engines.model_resolver import ModelResolver
@@ -12,6 +13,7 @@ from core.infrastructure.engines.claude import ClaudeEngine
 from core.infrastructure.engines.codex import CodexEngine
 from core.infrastructure.engines.litellm import LiteLLMEngine
 from core.infrastructure.postgres import check_postgres
+from core.infrastructure.qa_executor import IsolatedProjectQAExecutor
 from core.infrastructure.rabbitmq import (
     RabbitMQTaskConsumer,
     RabbitMQTaskPublisher,
@@ -97,6 +99,16 @@ def main():
         engine=engine,
         context_provider=DefaultContextProvider(),
     )
+    qa_executor = IsolatedProjectQAExecutor(settings.qa_execution)
+    qa_agent = QAAgent(
+        task_status_writer=task_repository,
+        task_result_writer=task_result_repository,
+        task_execution_reader=task_result_repository,
+        project_reader=project_repository,
+        workspace_reader=project_workspace,
+        executor=qa_executor,
+        execution_policy=settings.qa_execution,
+    )
 
     project = orchestrator_agent.create_project(
         name="Demo Project",
@@ -119,6 +131,7 @@ def main():
             AgentRole.BACKEND: backend_agent,
             AgentRole.FRONTEND: frontend_agent,
             AgentRole.REVIEWER: reviewer_agent,
+            AgentRole.QA: qa_agent,
         }
     )
 
