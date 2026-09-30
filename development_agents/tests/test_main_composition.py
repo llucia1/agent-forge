@@ -30,6 +30,7 @@ class MainCompositionTests(unittest.TestCase):
         }
         self.assertIn("workspace_reader", keyword_names)
         self.assertIn("executor", keyword_names)
+        self.assertIn("authorized_checks", keyword_names)
         self.assertNotIn("workspace", keyword_names)
         mappings = [
             argument

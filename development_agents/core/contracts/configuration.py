@@ -3,7 +3,7 @@ from typing import Mapping
 from uuid import UUID
 
 from core.models.task import AgentRole
-from core.models.qa import QAExecutionPolicy
+from core.models.qa import QACheck, QAExecutionPolicy
 
 
 @dataclass(frozen=True)
@@ -46,3 +46,4 @@ class ApplicationSettings:
     engine: EngineSettings
     litellm: LiteLLMSettings
     qa_execution: QAExecutionPolicy
+    qa_checks: tuple[QACheck, ...]

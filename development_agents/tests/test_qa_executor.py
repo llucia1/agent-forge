@@ -137,6 +137,44 @@ class IsolatedProjectQAExecutorTests(unittest.TestCase):
                 "sha256:" + "0" * 64,
             )
 
+    def test_compiles_python_snapshot_without_process_or_sandbox(self):
+        snapshot = ProjectSnapshot.create(
+            self.architecture,
+            [WorkspaceFile("backend/main.py", "value = 1\n")],
+        )
+        check = QACheck(
+            id="python-compile",
+            command=QACommand(
+                executable="python3",
+                arguments=("-m", "compileall", "backend"),
+                working_directory=".",
+            ),
+            evidence_paths=("backend/main.py",),
+            timeout_seconds=10,
+        )
+        policy = QAExecutionPolicy(
+            (
+                ExecutableRule(
+                    "python3",
+                    (("-m", "compileall", "backend"),),
+                    (".",),
+                    10,
+                ),
+            ),
+            1024,
+        )
+        process_run = Mock()
+
+        result = IsolatedProjectQAExecutor(
+            policy,
+            sandbox_executable="missing-bwrap",
+            process_run=process_run,
+        ).execute(snapshot, (check,), snapshot.fingerprint)
+
+        self.assertEqual(result.checks[0].status, QACheckStatus.PASSED)
+        self.assertEqual(result.checks[0].exit_code, 0)
+        process_run.assert_not_called()
+
     def test_rejects_shell_operators_and_unlisted_arguments(self):
         unsafe_check = QACheck(
             id=self.check.id,

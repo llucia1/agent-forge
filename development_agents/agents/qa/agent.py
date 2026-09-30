@@ -13,6 +13,9 @@ from core.models.architecture import (
 from core.models.project import Project
 from core.models.qa import (
     QAArtifact,
+    QACheck,
+    QACheckResult,
+    QACheckStatus,
     QAExecutionPolicy,
     QAStatus,
     QAValidationError,
@@ -37,11 +40,6 @@ ARCHITECTURE_AUTHORITATIVE_FIELDS = (
     "technical_constraints",
 )
 
-PENDING_QA_INPUTS = (
-    "reviewed_workspace_provenance",
-    "authorized_qa_checks",
-)
-
 
 class QAAgent(TaskHandler):
     def __init__(
@@ -53,6 +51,7 @@ class QAAgent(TaskHandler):
         workspace_reader: ProjectCodeReader,
         executor: ProjectQAExecutor,
         execution_policy: QAExecutionPolicy,
+        authorized_checks: tuple[QACheck, ...] = (),
     ):
         self.task_status_writer = task_status_writer
         self.task_result_writer = task_result_writer
@@ -61,6 +60,7 @@ class QAAgent(TaskHandler):
         self.workspace_reader = workspace_reader
         self.executor = executor
         self.execution_policy = execution_policy
+        self.authorized_checks = authorized_checks
 
     def handle(self, task: Task) -> None:
         try:
@@ -149,13 +149,41 @@ class QAAgent(TaskHandler):
                 task.project_id
             )
             snapshot = ProjectSnapshot.create(architecture, workspace_files)
-            self._persist_needs_input(
-                task,
+            reviewed_fingerprint = latest_review.result.metadata.get(
+                "workspace_fingerprint"
+            )
+            if reviewed_fingerprint != snapshot.fingerprint:
+                self._persist_needs_input(
+                    task,
+                    project,
+                    gate,
+                    snapshot.fingerprint,
+                    ("reviewed_workspace_provenance",),
+                )
+                return
+            if not self.authorized_checks:
+                self._persist_needs_input(
+                    task,
+                    project,
+                    gate,
+                    snapshot.fingerprint,
+                    ("authorized_qa_checks",),
+                )
+                return
+
+            execution = self.executor.execute(
+                snapshot,
+                self.authorized_checks,
+                reviewed_fingerprint,
+            )
+            artifact = self._execution_artifact(
                 project,
                 gate,
                 snapshot.fingerprint,
-                PENDING_QA_INPUTS,
+                execution.checks,
             )
+            self._persist_artifact(task, artifact)
+            self._update_status(task, TaskStatus.COMPLETED)
         except Exception:
             try:
                 self._update_status(task, TaskStatus.FAILED)
@@ -218,6 +246,39 @@ class QAAgent(TaskHandler):
             review_gate=gate,
             workspace_fingerprint=fingerprint,
             checks=(),
+            missing_decisions=(),
+        )
+
+    @classmethod
+    def _execution_artifact(
+        cls,
+        project: Project,
+        gate: ReviewGate,
+        fingerprint: str,
+        checks: tuple[QACheckResult, ...],
+    ) -> QAArtifact:
+        if checks and all(
+            check.status is QACheckStatus.PASSED for check in checks
+        ):
+            status = QAStatus.PASSED
+            summary = "All authorized QA checks passed"
+        elif any(
+            check.status in (QACheckStatus.FAILED, QACheckStatus.ERROR)
+            for check in checks
+        ):
+            status = QAStatus.FAILED
+            summary = "One or more authorized QA checks failed"
+        else:
+            status = QAStatus.BLOCKED
+            summary = "Authorized QA checks could not be executed"
+        return QAArtifact(
+            version=1,
+            status=status,
+            summary=summary,
+            technical_baseline=cls._baseline(project),
+            review_gate=gate,
+            workspace_fingerprint=fingerprint,
+            checks=tuple(checks),
             missing_decisions=(),
         )
 

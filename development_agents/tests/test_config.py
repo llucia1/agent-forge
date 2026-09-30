@@ -125,6 +125,7 @@ class EngineSettingsTests(unittest.TestCase):
         self.assertEqual(settings.qa_execution.executable_rules, ())
         self.assertFalse(settings.qa_execution.network_access)
         self.assertEqual(settings.qa_execution.max_output_bytes, 65536)
+        self.assertEqual(settings.qa_checks, ())
 
     def test_loads_exact_qa_executable_policy(self):
         settings = load_settings(
@@ -144,6 +145,54 @@ class EngineSettingsTests(unittest.TestCase):
         self.assertEqual(rule.executable, "quality-tool")
         self.assertEqual(rule.allowed_arguments, (("verify",),))
         self.assertFalse(settings.qa_execution.network_access)
+
+    def test_loads_authorized_qa_checks_separately_from_policy(self):
+        settings = load_settings(
+            {
+                "AGENTFORGE_DEFAULT_ENGINE": "litellm",
+                "AGENTFORGE_DEFAULT_MODEL": "general-default",
+                "AGENTFORGE_QA_EXECUTABLE_POLICY": (
+                    '{"python":{"allowed_arguments":'
+                    '[["-m","compileall","backend"]],'
+                    '"allowed_working_directories":["."],'
+                    '"max_timeout_seconds":30}}'
+                ),
+                "AGENTFORGE_QA_CHECKS": (
+                    '[{"id":"compile","executable":"python",'
+                    '"arguments":["-m","compileall","backend"],'
+                    '"working_directory":".",'
+                    '"evidence_paths":["backend/main.py"],'
+                    '"timeout_seconds":30}]'
+                ),
+            }
+        )
+
+        check = settings.qa_checks[0]
+        self.assertEqual(check.id, "compile")
+        self.assertEqual(check.command.executable, "python")
+        self.assertEqual(
+            check.command.arguments,
+            ("-m", "compileall", "backend"),
+        )
+
+    def test_rejects_qa_check_outside_execution_policy(self):
+        with self.assertRaisesRegex(
+            ConfigurationError,
+            "outside the policy",
+        ):
+            load_settings(
+                {
+                    "AGENTFORGE_DEFAULT_ENGINE": "litellm",
+                    "AGENTFORGE_DEFAULT_MODEL": "general-default",
+                    "AGENTFORGE_QA_CHECKS": (
+                        '[{"id":"compile","executable":"python",'
+                        '"arguments":["-m","compileall","backend"],'
+                        '"working_directory":".",'
+                        '"evidence_paths":["backend/main.py"],'
+                        '"timeout_seconds":30}]'
+                    ),
+                }
+            )
 
 
 if __name__ == "__main__":

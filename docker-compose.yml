@@ -17,6 +17,8 @@ services:
     environment:
       LITELLM_BASE_URL: ${LITELLM_BASE_URL}
       LITELLM_API_KEY: ${LITELLM_API_KEY}
+      AGENTFORGE_QA_EXECUTABLE_POLICY: ${AGENTFORGE_QA_EXECUTABLE_POLICY:-{}}
+      AGENTFORGE_QA_CHECKS: ${AGENTFORGE_QA_CHECKS:-[]}
     depends_on:
       postgres:
         condition: service_healthy

@@ -10,7 +10,13 @@ from core.contracts.configuration import (
     LiteLLMSettings,
     RabbitMQSettings,
 )
-from core.models.qa import ExecutableRule, QAExecutionPolicy
+from core.models.qa import (
+    ExecutableRule,
+    QACheck,
+    QACommand,
+    QAExecutionPolicy,
+    QAValidationError,
+)
 from core.models.task import AgentRole
 
 
@@ -32,6 +38,9 @@ def load_settings(
     environ: Mapping[str, str] | None = None,
 ) -> ApplicationSettings:
     source = os.environ if environ is None else environ
+    qa_execution = _load_qa_execution_policy(source)
+    qa_checks = _load_qa_checks(source)
+    _validate_qa_configuration(qa_execution, qa_checks)
     return ApplicationSettings(
         database=DatabaseSettings(
             host=source.get("POSTGRES_HOST"),
@@ -55,7 +64,8 @@ def load_settings(
                 source.get("LITELLM_TIMEOUT_SECONDS", "600")
             ),
         ),
-        qa_execution=_load_qa_execution_policy(source),
+        qa_execution=qa_execution,
+        qa_checks=qa_checks,
     )
 
 
@@ -137,6 +147,100 @@ def _load_qa_execution_policy(
         max_output_bytes=max_output_bytes,
         network_access=False,
     )
+
+
+def _load_qa_checks(source: Mapping[str, str]) -> tuple[QACheck, ...]:
+    setting_name = "AGENTFORGE_QA_CHECKS"
+    raw_value = source.get(setting_name, "[]")
+    try:
+        payload = json.loads(raw_value)
+    except json.JSONDecodeError as error:
+        raise ConfigurationError(
+            f"{setting_name} must be a valid JSON array"
+        ) from error
+    if not isinstance(payload, list):
+        raise ConfigurationError(f"{setting_name} must be a JSON array")
+
+    expected_fields = {
+        "id",
+        "executable",
+        "arguments",
+        "working_directory",
+        "evidence_paths",
+        "timeout_seconds",
+    }
+    checks = []
+    for index, raw_check in enumerate(payload):
+        if not isinstance(raw_check, dict) or set(raw_check) != expected_fields:
+            raise ConfigurationError(
+                f"{setting_name} check at index {index} has invalid fields"
+            )
+        arguments = raw_check["arguments"]
+        evidence_paths = raw_check["evidence_paths"]
+        if not isinstance(arguments, list) or not all(
+            isinstance(argument, str) for argument in arguments
+        ):
+            raise ConfigurationError(
+                f"{setting_name} arguments must be arrays of strings"
+            )
+        if not isinstance(evidence_paths, list) or not all(
+            isinstance(path, str) for path in evidence_paths
+        ):
+            raise ConfigurationError(
+                f"{setting_name} evidence_paths must be arrays of strings"
+            )
+        try:
+            checks.append(
+                QACheck(
+                    id=raw_check["id"],
+                    command=QACommand(
+                        executable=raw_check["executable"],
+                        arguments=tuple(arguments),
+                        working_directory=raw_check["working_directory"],
+                    ),
+                    evidence_paths=tuple(evidence_paths),
+                    timeout_seconds=raw_check["timeout_seconds"],
+                )
+            )
+        except (TypeError, QAValidationError) as error:
+            raise ConfigurationError(
+                f"{setting_name} check at index {index} is invalid"
+            ) from error
+
+    check_ids = [check.id for check in checks]
+    if len(set(check_ids)) != len(check_ids):
+        raise ConfigurationError(
+            f"{setting_name} must not contain duplicate check ids"
+        )
+    return tuple(checks)
+
+
+def _validate_qa_configuration(
+    policy: QAExecutionPolicy,
+    checks: tuple[QACheck, ...],
+) -> None:
+    for check in checks:
+        rule = policy.rule_for(check.command.executable)
+        if rule is None:
+            raise ConfigurationError(
+                f"QA check {check.id} uses an executable outside the policy"
+            )
+        if check.command.arguments not in rule.allowed_arguments:
+            raise ConfigurationError(
+                f"QA check {check.id} uses arguments outside the policy"
+            )
+        if (
+            check.command.working_directory
+            not in rule.allowed_working_directories
+        ):
+            raise ConfigurationError(
+                f"QA check {check.id} uses a working directory outside "
+                "the policy"
+            )
+        if check.timeout_seconds > rule.max_timeout_seconds:
+            raise ConfigurationError(
+                f"QA check {check.id} exceeds the policy timeout"
+            )
 
 
 def _load_engine_settings(source: Mapping[str, str]) -> EngineSettings:

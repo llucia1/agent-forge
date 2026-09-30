@@ -18,7 +18,7 @@ from core.models.project import Project
 from core.models.review import ReviewValidationError
 from core.models.task import AgentRole, Task, TaskStatus
 from core.models.task_result import TaskExecutionResult
-from core.models.workspace import WorkspaceFile
+from core.models.workspace import ProjectSnapshot, WorkspaceFile
 
 
 EXPECTED_RULES = [
@@ -221,7 +221,16 @@ class ReviewerAgentTests(unittest.TestCase):
         self.assertEqual(persisted.agent, "reviewer")
         self.assertEqual(persisted.provider, "litellm")
         self.assertEqual(persisted.model_alias, "project-review-model")
-        self.assertEqual(persisted.metadata, {"tokens": 275})
+        self.assertEqual(
+            persisted.metadata,
+            {
+                "tokens": 275,
+                "workspace_fingerprint": ProjectSnapshot.create(
+                    self.architecture,
+                    self.workspace_files,
+                ).fingerprint,
+            },
+        )
         self.assertEqual(json.loads(persisted.output), self.review_output)
         self.assertEqual(self.task.status, TaskStatus.COMPLETED)
 

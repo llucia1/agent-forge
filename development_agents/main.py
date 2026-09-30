@@ -108,6 +108,7 @@ def main():
         workspace_reader=project_workspace,
         executor=qa_executor,
         execution_policy=settings.qa_execution,
+        authorized_checks=settings.qa_checks,
     )
 
     project = orchestrator_agent.create_project(

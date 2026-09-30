@@ -360,11 +360,23 @@ class QAArtifact:
         ):
             raise QAValidationError("Passed QA requires every check to pass")
         if self.status is QAStatus.FAILED and not any(
-            check.status is QACheckStatus.FAILED for check in self.checks
+            check.status in (QACheckStatus.FAILED, QACheckStatus.ERROR)
+            for check in self.checks
         ):
             raise QAValidationError("Failed QA requires a failed check")
         if self.status is QAStatus.BLOCKED and self.checks:
-            raise QAValidationError("Blocked QA cannot contain executed checks")
+            if (
+                self.review_gate is None
+                or self.review_gate.status is not ReviewStatus.APPROVED
+                or self.workspace_fingerprint is None
+                or any(
+                    check.status is not QACheckStatus.NOT_RUN
+                    for check in self.checks
+                )
+            ):
+                raise QAValidationError(
+                    "Blocked QA checks must be approved and not run"
+                )
         if self.status is QAStatus.NEEDS_INPUT and not self.missing_decisions:
             raise QAValidationError(
                 "Needs-input QA requires missing decisions"

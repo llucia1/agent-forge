@@ -55,18 +55,15 @@ class IsolatedProjectQAExecutor(ProjectQAExecutor):
             for check in checks
         ]
 
-        sandbox_path = shutil.which(self.sandbox_executable)
-        if sandbox_path is None:
-            return QAExecutionResult(
-                checks=tuple(
-                    self._not_run(
-                        check,
-                        evidence_hashes,
-                        "isolated_executor_unavailable",
-                    )
-                    for check, evidence_hashes in validated
-                )
+        builtin_results = {
+            check.id: self._execute_builtin(
+                snapshot,
+                check,
+                evidence_hashes,
             )
+            for check, evidence_hashes in validated
+        }
+        sandbox_path = shutil.which(self.sandbox_executable)
 
         with tempfile.TemporaryDirectory(prefix="agentforge-qa-") as root:
             snapshot_root = Path(root) / "workspace"
@@ -79,15 +76,85 @@ class IsolatedProjectQAExecutor(ProjectQAExecutor):
                     "approval"
                 )
             results = [
-                self._execute_check(
-                    sandbox_path,
-                    snapshot_root,
-                    check,
-                    evidence_hashes,
+                builtin_results[check.id]
+                or (
+                    self._execute_check(
+                        sandbox_path,
+                        snapshot_root,
+                        check,
+                        evidence_hashes,
+                    )
+                    if sandbox_path is not None
+                    else self._not_run(
+                        check,
+                        evidence_hashes,
+                        "isolated_executor_unavailable",
+                    )
                 )
                 for check, evidence_hashes in validated
             ]
         return QAExecutionResult(checks=tuple(results))
+
+    def _execute_builtin(
+        self,
+        snapshot: ProjectSnapshot,
+        check: QACheck,
+        evidence_hashes: dict[str, str],
+    ) -> QACheckResult | None:
+        command = check.command
+        if command.executable not in ("python", "python3") or (
+            len(command.arguments) < 3
+            or command.arguments[:2] != ("-m", "compileall")
+        ):
+            return None
+
+        started = time.monotonic()
+        prefix = "" if command.working_directory == "." else (
+            command.working_directory + "/"
+        )
+        available = {
+            workspace_file.relative_path: workspace_file.content
+            for workspace_file in snapshot.files
+        }
+        selected = set()
+        for raw_target in command.arguments[2:]:
+            target = prefix + raw_target.strip("/")
+            selected.update(
+                path
+                for path in available
+                if path.endswith(".py")
+                and (path == target or path.startswith(target + "/"))
+            )
+
+        errors = []
+        for path in sorted(selected):
+            try:
+                compile(available[path], path, "exec")
+            except (SyntaxError, ValueError) as error:
+                errors.append(f"{path}: {error}")
+        duration_ms = int((time.monotonic() - started) * 1000)
+        if not selected:
+            errors.append("compileall targets contain no Python files")
+        passed = not errors
+        stdout, stdout_truncated = self._bounded(
+            "Compiled: " + ", ".join(sorted(selected))
+            if passed
+            else ""
+        )
+        stderr, stderr_truncated = self._bounded("\n".join(errors))
+        return QACheckResult(
+            id=check.id,
+            status=(
+                QACheckStatus.PASSED if passed else QACheckStatus.FAILED
+            ),
+            exit_code=0 if passed else 1,
+            duration_ms=duration_ms,
+            stdout_excerpt=stdout,
+            stderr_excerpt=stderr,
+            output_truncated=stdout_truncated or stderr_truncated,
+            failure_reason=None if passed else "compile_error",
+            evidence_hashes=evidence_hashes,
+        )
 
     @staticmethod
     def _materialize(root: Path, snapshot: ProjectSnapshot) -> None:

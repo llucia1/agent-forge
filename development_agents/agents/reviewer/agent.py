@@ -16,7 +16,7 @@ from core.models.review import (
 )
 from core.models.task import Task, TaskStatus
 from core.models.task_result import TaskExecutionResult
-from core.models.workspace import WorkspaceFile
+from core.models.workspace import ProjectSnapshot, WorkspaceFile
 
 
 class ReviewProjectNotFoundError(LookupError):
@@ -140,6 +140,18 @@ class ReviewerAgent(TaskHandler):
                 review,
                 rule_catalog,
                 workspace_files,
+            )
+            engine_result = EngineResult(
+                output=engine_result.output,
+                metadata={
+                    **engine_result.metadata,
+                    "workspace_fingerprint": ProjectSnapshot.create(
+                        architecture,
+                        workspace_files,
+                    ).fingerprint,
+                },
+                provider=engine_result.provider,
+                model_alias=engine_result.model_alias,
             )
             self._persist_result(task, engine_result, review)
 

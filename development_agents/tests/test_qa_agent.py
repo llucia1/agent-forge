@@ -3,14 +3,22 @@ import unittest
 from unittest.mock import Mock, call
 from uuid import UUID
 
-from agents.qa.agent import PENDING_QA_INPUTS, QAAgent
+from agents.qa.agent import QAAgent
 from core.contracts.qa import ProjectQAExecutor
 from core.contracts.repositories import ProjectReader, TaskStatusWriter
 from core.contracts.results import LatestTaskExecutionReader, TaskResultWriter
 from core.contracts.workspaces import ProjectCodeReader
 from core.models.architecture import ArchitectureArtifact
 from core.models.project import Project
-from core.models.qa import QAExecutionPolicy
+from core.models.qa import (
+    ExecutableRule,
+    QACheck,
+    QACheckResult,
+    QACheckStatus,
+    QACommand,
+    QAExecutionPolicy,
+    QAExecutionResult,
+)
 from core.models.task import AgentRole, Task, TaskStatus
 from core.models.task_result import AgentTaskExecution, TaskExecutionResult
 from core.models.workspace import ProjectSnapshot, WorkspaceFile
@@ -53,7 +61,12 @@ class QAAgentTests(unittest.TestCase):
             provider="test",
             model_alias=None,
             output=json.dumps(self._review_payload()),
-            metadata={},
+            metadata={
+                "workspace_fingerprint": ProjectSnapshot.create(
+                    self.architecture,
+                    self.files,
+                ).fingerprint,
+            },
         )
         self.latest_review = AgentTaskExecution(
             task_id=self.review_task_id,
@@ -142,7 +155,7 @@ class QAAgentTests(unittest.TestCase):
             provider="test",
             model_alias=None,
             output=json.dumps(payload),
-            metadata={},
+            metadata=dict(self.review_result.metadata),
         )
         self.execution_reader.find_latest.return_value = AgentTaskExecution(
             task_id=self.review_task_id,
@@ -155,7 +168,7 @@ class QAAgentTests(unittest.TestCase):
     def _persisted_payload(self):
         return json.loads(self.result_writer.write.call_args.args[0].output)
 
-    def test_approved_review_stops_at_explicit_pending_inputs(self):
+    def test_approved_review_requires_explicit_authorized_checks(self):
         self.agent.handle(self.task)
 
         self.executor.execute.assert_not_called()
@@ -167,7 +180,7 @@ class QAAgentTests(unittest.TestCase):
         self.assertEqual(payload["status"], "needs_input")
         self.assertEqual(
             payload["missing_decisions"],
-            list(PENDING_QA_INPUTS),
+            ["authorized_qa_checks"],
         )
         self.assertEqual(
             payload["workspace_fingerprint"],
@@ -179,6 +192,73 @@ class QAAgentTests(unittest.TestCase):
                 call(self.task.id, TaskStatus.IN_PROGRESS),
                 call(self.task.id, TaskStatus.NEEDS_INPUT),
             ],
+        )
+
+    def test_executes_authorized_checks_for_exact_reviewed_snapshot(self):
+        check = QACheck(
+            id="project-check",
+            command=QACommand("quality-tool", ("verify",), "backend"),
+            evidence_paths=("backend/project.conf",),
+            timeout_seconds=10,
+        )
+        policy = QAExecutionPolicy(
+            (
+                ExecutableRule(
+                    "quality-tool",
+                    (("verify",),),
+                    ("backend",),
+                    20,
+                ),
+            ),
+            1024,
+        )
+        self.agent = QAAgent(
+            task_status_writer=self.status_writer,
+            task_result_writer=self.result_writer,
+            task_execution_reader=self.execution_reader,
+            project_reader=self.project_reader,
+            workspace_reader=self.workspace_reader,
+            executor=self.executor,
+            execution_policy=policy,
+            authorized_checks=(check,),
+        )
+        check_result = QACheckResult(
+            id=check.id,
+            status=QACheckStatus.PASSED,
+            exit_code=0,
+            duration_ms=4,
+            stdout_excerpt="ok",
+            stderr_excerpt="",
+            output_truncated=False,
+            failure_reason=None,
+            evidence_hashes={
+                "backend/project.conf": "sha256:" + "1" * 64,
+            },
+        )
+        self.executor.execute.return_value = QAExecutionResult((check_result,))
+
+        self.agent.handle(self.task)
+
+        snapshot = ProjectSnapshot.create(self.architecture, self.files)
+        self.executor.execute.assert_called_once_with(
+            snapshot,
+            (check,),
+            snapshot.fingerprint,
+        )
+        self.assertEqual(self._persisted_payload()["status"], "passed")
+        self.assertEqual(self.task.status, TaskStatus.COMPLETED)
+
+    def test_changed_workspace_is_not_executed_after_review(self):
+        self.latest_review.result.metadata["workspace_fingerprint"] = (
+            "sha256:" + "0" * 64
+        )
+
+        self.agent.handle(self.task)
+
+        self.executor.execute.assert_not_called()
+        self.assertEqual(
+            self._persisted_payload()["missing_decisions"],
+            ["reviewed_workspace_provenance"],
         )
 
     def test_changes_required_review_blocks_without_reading_code(self):
