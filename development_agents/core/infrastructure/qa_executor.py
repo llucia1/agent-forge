@@ -118,12 +118,24 @@ class IsolatedProjectQAExecutor(ProjectQAExecutor):
         }
         selected = set()
         for raw_target in command.arguments[2:]:
-            target = prefix + raw_target.strip("/")
+            normalized_target = raw_target.strip("/")
+            if normalized_target == ".":
+                target = (
+                    ""
+                    if command.working_directory == "."
+                    else command.working_directory
+                )
+            else:
+                target = prefix + normalized_target
             selected.update(
                 path
                 for path in available
                 if path.endswith(".py")
-                and (path == target or path.startswith(target + "/"))
+                and (
+                    not target
+                    or path == target
+                    or path.startswith(target + "/")
+                )
             )
 
         errors = []

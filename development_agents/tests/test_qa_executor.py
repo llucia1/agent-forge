@@ -175,6 +175,41 @@ class IsolatedProjectQAExecutorTests(unittest.TestCase):
         self.assertEqual(result.checks[0].exit_code, 0)
         process_run.assert_not_called()
 
+    def test_compileall_dot_selects_python_files_from_workspace_root(self):
+        snapshot = ProjectSnapshot.create(
+            self.architecture,
+            [WorkspaceFile("backend/main.py", "value = 1\n")],
+        )
+        check = QACheck(
+            id="python-compile-all",
+            command=QACommand(
+                executable="python",
+                arguments=("-m", "compileall", "."),
+                working_directory=".",
+            ),
+            evidence_paths=("backend/main.py",),
+            timeout_seconds=10,
+        )
+        policy = QAExecutionPolicy(
+            (
+                ExecutableRule(
+                    "python",
+                    (("-m", "compileall", "."),),
+                    (".",),
+                    10,
+                ),
+            ),
+            1024,
+        )
+
+        result = IsolatedProjectQAExecutor(
+            policy,
+            sandbox_executable="missing-bwrap",
+        ).execute(snapshot, (check,), snapshot.fingerprint)
+
+        self.assertEqual(result.checks[0].status, QACheckStatus.PASSED)
+        self.assertIn("backend/main.py", result.checks[0].stdout_excerpt)
+
     def test_rejects_shell_operators_and_unlisted_arguments(self):
         unsafe_check = QACheck(
             id=self.check.id,
