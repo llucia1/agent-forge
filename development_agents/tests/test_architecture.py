@@ -18,11 +18,81 @@ def valid_architecture() -> dict:
         "frontend_architecture": {"style": "component-based"},
         "infrastructure": {"runtime": "Docker Compose"},
         "technical_constraints": ["Use Python 3.12"],
-        "modules": [{"name": "architecture"}],
-        "interfaces": [{"name": "TaskResultWriter"}],
-        "apis": [{"name": "tasks"}],
-        "persistence": {"database": "PostgreSQL"},
-        "execution_plan": [{"step": "Define contracts"}],
+        "modules": [
+            {
+                "name": "backend",
+                "responsibility": "Execute tasks",
+                "layer": "application",
+                "dependencies": [],
+            },
+            {
+                "name": "frontend",
+                "responsibility": "Present tasks",
+                "layer": "presentation",
+                "dependencies": ["backend"],
+            },
+        ],
+        "interfaces": [
+            {
+                "name": "TaskResultReader",
+                "provider": "backend",
+                "consumers": ["frontend"],
+                "operations": [
+                    {
+                        "name": "read_task",
+                        "input": {"task_id": "uuid"},
+                        "output": {"status": "string"},
+                    }
+                ],
+            }
+        ],
+        "apis": [
+            {
+                "name": "tasks",
+                "protocol": "HTTP/JSON",
+                "provider": "backend",
+                "consumers": ["frontend"],
+                "operations": [
+                    {
+                        "name": "get_task",
+                        "method": "GET",
+                        "path": "/tasks/{task_id}",
+                        "request": {"path": {"task_id": "uuid"}},
+                        "responses": {"200": {"status": "string"}},
+                    }
+                ],
+            }
+        ],
+        "persistence": {
+            "stores": [
+                {
+                    "name": "primary",
+                    "technology": "PostgreSQL",
+                    "purpose": "Store tasks",
+                    "owned_by": "backend",
+                    "data_models": [
+                        {
+                            "name": "Task",
+                            "description": "Persisted task state",
+                        }
+                    ],
+                }
+            ]
+        },
+        "execution_plan": [
+            {
+                "order": 1,
+                "name": "Implement backend",
+                "description": "Build the task API and persistence",
+                "modules": ["backend"],
+            },
+            {
+                "order": 2,
+                "name": "Implement frontend",
+                "description": "Consume the task API",
+                "modules": ["frontend"],
+            },
+        ],
     }
 
 
@@ -106,6 +176,74 @@ class ArchitectureArtifactTests(unittest.TestCase):
         artifact = ArchitectureArtifact.from_json(json.dumps(payload))
         self.assertEqual(artifact.status, "needs_input")
 
+    def test_complete_requires_all_essential_architecture_sections(self):
+        for field_name in ("modules", "interfaces", "apis", "execution_plan"):
+            with self.subTest(field=field_name):
+                payload = valid_architecture()
+                payload[field_name] = []
+
+                with self.assertRaisesRegex(
+                    ArchitectureArtifactValidationError,
+                    "requires non-empty fields",
+                ):
+                    ArchitectureArtifact.from_json(json.dumps(payload))
+
+    def test_rejects_unknown_module_references(self):
+        for field_name, mutate in (
+            (
+                "interfaces",
+                lambda payload: payload["interfaces"][0].update(
+                    provider="missing"
+                ),
+            ),
+            (
+                "apis",
+                lambda payload: payload["apis"][0].update(
+                    consumers=["missing"]
+                ),
+            ),
+            (
+                "execution_plan",
+                lambda payload: payload["execution_plan"][0].update(
+                    modules=["missing"]
+                ),
+            ),
+        ):
+            with self.subTest(field=field_name):
+                payload = valid_architecture()
+                mutate(payload)
+
+                with self.assertRaises(ArchitectureArtifactValidationError):
+                    ArchitectureArtifact.from_json(json.dumps(payload))
+
+    def test_rejects_incomplete_nested_contracts_and_plan(self):
+        mutations = (
+            lambda payload: payload["interfaces"][0].update(operations=[]),
+            lambda payload: payload["apis"][0].pop("protocol"),
+            lambda payload: payload["apis"][0]["operations"][0].update(
+                responses={}
+            ),
+            lambda payload: payload["execution_plan"][1].update(order=3),
+        )
+
+        for mutate in mutations:
+            with self.subTest(mutate=mutate):
+                payload = valid_architecture()
+                mutate(payload)
+
+                with self.assertRaises(ArchitectureArtifactValidationError):
+                    ArchitectureArtifact.from_json(json.dumps(payload))
+
+    def test_persistence_requires_owned_structured_stores(self):
+        payload = valid_architecture()
+        payload["persistence"] = {"database": "PostgreSQL"}
+
+        with self.assertRaisesRegex(
+            ArchitectureArtifactValidationError,
+            "persistence must contain exactly",
+        ):
+            ArchitectureArtifact.from_json(json.dumps(payload))
+
     def test_rejects_wrong_required_field_types(self):
         invalid_values = {
             "backend_stack": [],
@@ -151,6 +289,11 @@ class ArchitectureArtifactTests(unittest.TestCase):
         )
         self.assertIn("status", contract["required"])
         self.assertIn("missing_decisions", contract["required"])
+        complete_rule = contract["allOf"][0]["then"]["properties"]
+        self.assertEqual(complete_rule["modules"]["minItems"], 1)
+        self.assertEqual(complete_rule["interfaces"]["minItems"], 1)
+        self.assertEqual(complete_rule["apis"]["minItems"], 1)
+        self.assertEqual(complete_rule["execution_plan"]["minItems"], 1)
         self.assertFalse(contract["additionalProperties"])
 
 

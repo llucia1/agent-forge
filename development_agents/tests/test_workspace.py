@@ -17,6 +17,7 @@ from core.contracts.workspaces import (
 from core.infrastructure.workspace import FilesystemProjectWorkspace
 from core.models.architecture import ArchitectureArtifact
 from core.models.workspace import WorkspaceFile
+from tests.architecture_fixtures import usable_architecture_sections
 
 
 PROJECT_ID = UUID("93de5ea5-729a-4c5e-8dc3-443165ed516b")
@@ -35,11 +36,9 @@ def architecture_artifact() -> ArchitectureArtifact:
                 "frontend_architecture": {"style": "components"},
                 "infrastructure": {"runtime": "Docker Compose"},
                 "technical_constraints": ["Use Python 3.12"],
-                "modules": [{"name": "architecture"}],
-                "interfaces": [{"name": "WorkspaceWriter"}],
-                "apis": [{"name": "tasks"}],
-                "persistence": {"database": "PostgreSQL"},
-                "execution_plan": [{"step": "Implement contracts"}],
+                **usable_architecture_sections(
+                    persistence_technology="PostgreSQL"
+                ),
             }
         )
     )

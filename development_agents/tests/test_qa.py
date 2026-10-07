@@ -14,6 +14,7 @@ from core.models.qa import (
 )
 from core.models.review import ReviewStatus, TechnicalBaseline
 from core.models.workspace import ProjectSnapshot, WorkspaceFile
+from tests.architecture_fixtures import usable_architecture_sections
 
 
 def architecture() -> ArchitectureArtifact:
@@ -29,11 +30,7 @@ def architecture() -> ArchitectureArtifact:
                 "frontend_architecture": {"style": "ClientStyle"},
                 "infrastructure": {"runtime": "ProjectRuntime"},
                 "technical_constraints": [],
-                "modules": [],
-                "interfaces": [],
-                "apis": [],
-                "persistence": {},
-                "execution_plan": [],
+                **usable_architecture_sections(),
             }
         )
     )
@@ -59,8 +56,8 @@ class ProjectSnapshotTests(unittest.TestCase):
 
     def test_fingerprint_includes_canonical_architecture(self):
         original = architecture()
-        payload = original.to_dict()
-        payload["modules"] = [{"name": "changed"}]
+        payload = json.loads(original.to_json())
+        payload["modules"][0]["responsibility"] = "Changed responsibility"
         changed = ArchitectureArtifact.from_json(json.dumps(payload))
 
         self.assertNotEqual(

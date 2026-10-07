@@ -20,6 +20,7 @@ from core.models.project import Project
 from core.models.task import AgentRole, Task, TaskStatus
 from core.models.task_result import TaskExecutionResult
 from core.models.workspace import WorkspaceFile
+from tests.architecture_fixtures import usable_architecture_sections
 
 
 class BackendAgentTests(unittest.TestCase):
@@ -99,11 +100,7 @@ class BackendAgentTests(unittest.TestCase):
             "frontend_architecture": self.project.frontend_architecture,
             "infrastructure": self.project.infrastructure,
             "technical_constraints": self.project.technical_constraints,
-            "modules": [{"name": "orders"}],
-            "interfaces": [{"name": "OrderRepository"}],
-            "apis": [{"method": "POST", "path": "/orders"}],
-            "persistence": {"entity": "orders"},
-            "execution_plan": [{"step": "Implement order creation"}],
+            **usable_architecture_sections(),
         }
         payload.update(overrides)
         return ArchitectureArtifact.from_json(json.dumps(payload))

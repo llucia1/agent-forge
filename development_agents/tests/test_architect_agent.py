@@ -40,7 +40,10 @@ class ArchitectAgentTests(unittest.TestCase):
             backend_architecture={"style": "layered"},
             frontend_stack={"framework": "React"},
             frontend_architecture={"pattern": "component-based"},
-            infrastructure={"runtime": "Docker Compose"},
+            infrastructure={
+                "runtime": "Docker Compose",
+                "database": "PostgreSQL",
+            },
             technical_constraints=["Use Python 3.12"],
         )
         self.project_reader = Mock(spec=ProjectReader)
@@ -54,13 +57,86 @@ class ArchitectAgentTests(unittest.TestCase):
             "backend_architecture": {"style": "layered"},
             "frontend_stack": {"framework": "React"},
             "frontend_architecture": {"pattern": "component-based"},
-            "infrastructure": {"runtime": "Docker Compose"},
+            "infrastructure": {
+                "runtime": "Docker Compose",
+                "database": "PostgreSQL",
+            },
             "technical_constraints": ["Use Python 3.12"],
-            "modules": [{"name": "architecture"}],
-            "interfaces": [{"name": "TaskResultWriter"}],
-            "apis": [{"name": "tasks"}],
-            "persistence": {"database": "PostgreSQL"},
-            "execution_plan": [{"step": "Define contracts"}],
+            "modules": [
+                {
+                    "name": "backend",
+                    "responsibility": "Execute tasks",
+                    "layer": "application",
+                    "dependencies": [],
+                },
+                {
+                    "name": "frontend",
+                    "responsibility": "Present tasks",
+                    "layer": "presentation",
+                    "dependencies": ["backend"],
+                },
+            ],
+            "interfaces": [
+                {
+                    "name": "TaskResultReader",
+                    "provider": "backend",
+                    "consumers": ["frontend"],
+                    "operations": [
+                        {
+                            "name": "read_task",
+                            "input": {"task_id": "uuid"},
+                            "output": {"status": "string"},
+                        }
+                    ],
+                }
+            ],
+            "apis": [
+                {
+                    "name": "tasks",
+                    "protocol": "HTTP/JSON",
+                    "provider": "backend",
+                    "consumers": ["frontend"],
+                    "operations": [
+                        {
+                            "name": "get_task",
+                            "method": "GET",
+                            "path": "/tasks/{task_id}",
+                            "request": {"path": {"task_id": "uuid"}},
+                            "responses": {"200": {"status": "string"}},
+                        }
+                    ],
+                }
+            ],
+            "persistence": {
+                "stores": [
+                    {
+                        "name": "primary",
+                        "technology": "PostgreSQL",
+                        "purpose": "Store tasks",
+                        "owned_by": "backend",
+                        "data_models": [
+                            {
+                                "name": "Task",
+                                "description": "Persisted task state",
+                            }
+                        ],
+                    }
+                ]
+            },
+            "execution_plan": [
+                {
+                    "order": 1,
+                    "name": "Implement backend",
+                    "description": "Build task execution and persistence",
+                    "modules": ["backend"],
+                },
+                {
+                    "order": 2,
+                    "name": "Implement frontend",
+                    "description": "Consume task results",
+                    "modules": ["frontend"],
+                },
+            ],
         }
         self.engine_result = EngineResult(
             output=json.dumps(self.architecture_output),
@@ -311,6 +387,89 @@ class ArchitectAgentTests(unittest.TestCase):
                 call(self.task.id, TaskStatus.FAILED),
             ],
         )
+
+    def test_incomplete_complete_output_fails_before_persistence(self):
+        self.architecture_output["execution_plan"] = []
+        self.engine.run.return_value = EngineResult(
+            output=json.dumps(self.architecture_output),
+            metadata={},
+            provider="test",
+            model_alias="architecture-primary",
+        )
+
+        with self.assertRaisesRegex(
+            ArchitectureArtifactValidationError,
+            "requires non-empty fields",
+        ):
+            self.agent.handle(self.task)
+
+        self.task_result_writer.write.assert_not_called()
+        self.architecture_artifact_writer.write.assert_not_called()
+        self.assertEqual(self.task.status, "failed")
+
+    def test_rejects_persistence_that_contradicts_project(self):
+        self.architecture_output["persistence"]["stores"][0][
+            "technology"
+        ] = "MongoDB"
+        self.engine.run.return_value = EngineResult(
+            output=json.dumps(self.architecture_output),
+            metadata={},
+            provider="test",
+            model_alias="architecture-primary",
+        )
+
+        with self.assertRaisesRegex(
+            ArchitectureArtifactValidationError,
+            "persistence contradicts authoritative Project",
+        ):
+            self.agent.handle(self.task)
+
+        self.task_result_writer.write.assert_not_called()
+        self.architecture_artifact_writer.write.assert_not_called()
+        self.assertEqual(self.task.status, "failed")
+
+    def test_requires_project_persistence_in_complete_architecture(self):
+        self.architecture_output["persistence"] = {}
+        self.engine.run.return_value = EngineResult(
+            output=json.dumps(self.architecture_output),
+            metadata={},
+            provider="test",
+            model_alias="architecture-primary",
+        )
+
+        with self.assertRaisesRegex(
+            ArchitectureArtifactValidationError,
+            "persistence contradicts authoritative Project",
+        ):
+            self.agent.handle(self.task)
+
+        self.task_result_writer.write.assert_not_called()
+        self.architecture_artifact_writer.write.assert_not_called()
+
+    def test_rejects_persistence_not_declared_by_project(self):
+        self.project.backend_stack.pop("database", None)
+        self.project.infrastructure.pop("database")
+        self.architecture_output["backend_stack"] = dict(
+            self.project.backend_stack
+        )
+        self.architecture_output["infrastructure"] = dict(
+            self.project.infrastructure
+        )
+        self.engine.run.return_value = EngineResult(
+            output=json.dumps(self.architecture_output),
+            metadata={},
+            provider="test",
+            model_alias="architecture-primary",
+        )
+
+        with self.assertRaisesRegex(
+            ArchitectureArtifactValidationError,
+            "persistence contradicts authoritative Project",
+        ):
+            self.agent.handle(self.task)
+
+        self.task_result_writer.write.assert_not_called()
+        self.architecture_artifact_writer.write.assert_not_called()
 
     def test_marks_task_as_failed_when_project_does_not_exist(self):
         self.project_reader.find_by_id.return_value = None

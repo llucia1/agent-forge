@@ -22,6 +22,7 @@ from core.models.qa import (
 from core.models.task import AgentRole, Task, TaskStatus
 from core.models.task_result import AgentTaskExecution, TaskExecutionResult
 from core.models.workspace import ProjectSnapshot, WorkspaceFile
+from tests.architecture_fixtures import usable_architecture_sections
 
 
 class QAAgentTests(unittest.TestCase):
@@ -114,11 +115,7 @@ class QAAgentTests(unittest.TestCase):
                     "technical_constraints": (
                         self.project.technical_constraints
                     ),
-                    "modules": [{"name": "project"}],
-                    "interfaces": [],
-                    "apis": [],
-                    "persistence": {},
-                    "execution_plan": [],
+                    **usable_architecture_sections(),
                 }
             )
         )

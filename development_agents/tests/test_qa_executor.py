@@ -16,6 +16,7 @@ from core.models.qa import (
     QAValidationError,
 )
 from core.models.workspace import ProjectSnapshot, WorkspaceFile
+from tests.architecture_fixtures import usable_architecture_sections
 
 
 class IsolatedProjectQAExecutorTests(unittest.TestCase):
@@ -32,11 +33,7 @@ class IsolatedProjectQAExecutorTests(unittest.TestCase):
                     "frontend_architecture": {"style": "ClientStyle"},
                     "infrastructure": {"runtime": "ProjectRuntime"},
                     "technical_constraints": [],
-                    "modules": [],
-                    "interfaces": [],
-                    "apis": [],
-                    "persistence": {},
-                    "execution_plan": [],
+                    **usable_architecture_sections(),
                 }
             )
         )

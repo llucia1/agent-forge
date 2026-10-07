@@ -19,6 +19,7 @@ from core.models.review import ReviewValidationError
 from core.models.task import AgentRole, Task, TaskStatus
 from core.models.task_result import TaskExecutionResult
 from core.models.workspace import ProjectSnapshot, WorkspaceFile
+from tests.architecture_fixtures import usable_architecture_sections
 
 
 EXPECTED_RULES = [
@@ -122,11 +123,7 @@ class ReviewerAgentTests(unittest.TestCase):
             "frontend_architecture": self.project.frontend_architecture,
             "infrastructure": self.project.infrastructure,
             "technical_constraints": self.project.technical_constraints,
-            "modules": [{"name": "project-module"}],
-            "interfaces": [{"name": "ProjectInterface"}],
-            "apis": [{"method": "GET", "path": "/project-items"}],
-            "persistence": {"entity": "project_items"},
-            "execution_plan": [{"step": "Implement project"}],
+            **usable_architecture_sections(),
         }
         payload.update(overrides)
         return ArchitectureArtifact.from_json(json.dumps(payload))

@@ -33,6 +33,17 @@ AUTHORITATIVE_TECHNICAL_FIELDS = (
     "technical_constraints",
 )
 
+PERSISTENCE_DECISION_KEYS = frozenset(
+    {
+        "database",
+        "databases",
+        "datastore",
+        "datastores",
+        "persistence",
+        "storage",
+    }
+)
+
 
 class ArchitectAgent(TaskHandler):
     def __init__(
@@ -185,13 +196,21 @@ class ArchitectAgent(TaskHandler):
             properties[field_name] = field_contract
 
         contract["authoritative_technical_definition"] = authoritative
+        contract["authoritative_persistence_technologies"] = (
+            cls._persistence_technologies(project)
+        )
         contract["instruction"] = (
             f"{contract['instruction']} Copy every authoritative technical "
             "field exactly. Do not add, replace or infer technologies, "
             "frameworks, databases, cloud providers, infrastructure or "
-            "architecture styles. Use status needs_input with a non-empty "
-            "missing_decisions list and no definitive design when another "
-            "technical decision is required."
+            "architecture styles. A complete architecture must define every "
+            "module responsibility and dependency, every cross-module "
+            "interface operation, every API protocol and operation contract, "
+            "and an ordered implementation plan referencing declared modules. "
+            "Persistence stores must use exactly the authoritative persistence "
+            "technologies. Use status needs_input with a non-empty missing_"
+            "decisions list and no definitive design when another technical "
+            "decision is required."
         )
         return contract
 
@@ -212,6 +231,50 @@ class ArchitectAgent(TaskHandler):
             raise ArchitectureArtifactValidationError(
                 "Architecture output contradicts authoritative Project "
                 "fields: " + ", ".join(mismatches)
+            )
+        if artifact.status is ArchitectureStatus.COMPLETE:
+            cls._validate_persistence_authority(project, artifact)
+
+    @staticmethod
+    def _persistence_technologies(project: Project) -> list[str]:
+        technologies = []
+
+        def collect(value: Any) -> None:
+            if isinstance(value, str) and value.strip():
+                technologies.append(value.strip())
+            elif isinstance(value, dict):
+                for nested_value in value.values():
+                    collect(nested_value)
+            elif isinstance(value, list):
+                for nested_value in value:
+                    collect(nested_value)
+
+        for definition in (project.backend_stack, project.infrastructure):
+            for key, value in definition.items():
+                if key.casefold() in PERSISTENCE_DECISION_KEYS:
+                    collect(value)
+
+        return list(dict.fromkeys(technologies))
+
+    @classmethod
+    def _validate_persistence_authority(
+        cls,
+        project: Project,
+        artifact: ArchitectureArtifact,
+    ) -> None:
+        expected = {
+            technology.casefold()
+            for technology in cls._persistence_technologies(project)
+        }
+        stores = artifact.persistence.get("stores", [])
+        actual = {
+            store["technology"].casefold()
+            for store in stores
+        }
+        if expected != actual:
+            raise ArchitectureArtifactValidationError(
+                "Architecture persistence contradicts authoritative Project "
+                "technologies"
             )
 
     def _update_status(self, task: Task, status: TaskStatus) -> None:
