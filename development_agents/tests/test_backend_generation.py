@@ -26,13 +26,24 @@ def valid_payload():
         "files": [
             {
                 "path": "backend/domain/orders/order.py",
-                "content": "class Order:\n    pass\n",
+                "content": "class Order:\n    order_id = 'new'\n",
             },
             {
                 "path": "backend/application/create_order.py",
-                "content": "def create_order():\n    pass\n",
+                "content": "def create_order():\n    return 'created'\n",
             },
         ],
+        "implementation": {
+            "modules": ["orders"],
+            "interfaces": [],
+            "apis": [],
+            "persistence_stores": [],
+            "dependencies": [],
+            "file_modules": {
+                "backend/domain/orders/order.py": "orders",
+                "backend/application/create_order.py": "orders",
+            },
+        },
         "summary": "Implemented the order backend",
     }
 
@@ -54,6 +65,14 @@ class BackendGenerationArtifactTests(unittest.TestCase):
             status="needs_input",
             missing_decisions=["database schema"],
             files=[],
+            implementation={
+                "modules": [],
+                "interfaces": [],
+                "apis": [],
+                "persistence_stores": [],
+                "dependencies": [],
+                "file_modules": {},
+            },
         )
 
         artifact = BackendGenerationArtifact.from_json(json.dumps(payload))
@@ -74,6 +93,30 @@ class BackendGenerationArtifactTests(unittest.TestCase):
         with self.assertRaisesRegex(
             BackendGenerationValidationError,
             "must contain files",
+        ):
+            BackendGenerationArtifact.from_json(json.dumps(payload))
+
+    def test_manifest_must_cover_every_generated_file(self):
+        payload = valid_payload()
+        payload["implementation"]["file_modules"].pop(
+            "backend/application/create_order.py"
+        )
+
+        with self.assertRaisesRegex(
+            BackendGenerationValidationError,
+            "map every generated file",
+        ):
+            BackendGenerationArtifact.from_json(json.dumps(payload))
+
+    def test_manifest_references_only_generated_files(self):
+        payload = valid_payload()
+        payload["implementation"]["file_modules"]["backend/missing.py"] = (
+            "orders"
+        )
+
+        with self.assertRaisesRegex(
+            BackendGenerationValidationError,
+            "map every generated file",
         ):
             BackendGenerationArtifact.from_json(json.dumps(payload))
 

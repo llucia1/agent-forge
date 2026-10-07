@@ -28,6 +28,7 @@ class BackendGenerationArtifact:
     infrastructure: dict[str, Any]
     technical_constraints: list[str]
     files: list[WorkspaceFile]
+    implementation: dict[str, Any]
     summary: str
 
     @classmethod
@@ -167,10 +168,25 @@ class BackendGenerationArtifact:
                 raise BackendGenerationValidationError(
                     "A complete backend output must contain files"
                 )
-        elif not missing_decisions or files:
+
+        implementation = _validate_implementation_manifest(
+            payload["implementation"],
+            set(paths),
+        )
+
+        if status is BackendGenerationStatus.COMPLETE:
+            if not implementation["modules"]:
+                raise BackendGenerationValidationError(
+                    "A complete backend output must implement modules"
+                )
+        elif (
+            not missing_decisions
+            or files
+            or any(implementation.values())
+        ):
             raise BackendGenerationValidationError(
                 "A needs_input backend output requires missing decisions "
-                "and cannot contain files"
+                "and cannot contain files or implementation coverage"
             )
 
         return cls(
@@ -182,6 +198,7 @@ class BackendGenerationArtifact:
             infrastructure=payload["infrastructure"],
             technical_constraints=constraints,
             files=files,
+            implementation=implementation,
             summary=summary,
         )
 
@@ -196,6 +213,7 @@ class BackendGenerationArtifact:
             "infrastructure",
             "technical_constraints",
             "files",
+            "implementation",
             "summary",
         )
 
@@ -238,6 +256,42 @@ class BackendGenerationArtifact:
                         "additionalProperties": False,
                     },
                 },
+                "implementation": {
+                    "type": "object",
+                    "required": [
+                        "modules",
+                        "interfaces",
+                        "apis",
+                        "persistence_stores",
+                        "dependencies",
+                        "file_modules",
+                    ],
+                    "properties": {
+                        field_name: {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "uniqueItems": True,
+                        }
+                        for field_name in (
+                            "modules",
+                            "interfaces",
+                            "apis",
+                            "persistence_stores",
+                        )
+                    }
+                    | {
+                        "dependencies": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "uniqueItems": True,
+                        },
+                        "file_modules": {
+                            "type": "object",
+                            "additionalProperties": {"type": "string"},
+                        },
+                    },
+                    "additionalProperties": False,
+                },
                 "summary": {"type": "string"},
             },
             "additionalProperties": False,
@@ -259,6 +313,7 @@ class BackendGenerationArtifact:
                 }
                 for workspace_file in self.files
             ],
+            "implementation": self.implementation,
             "summary": self.summary,
         }
 
@@ -274,3 +329,72 @@ class BackendGenerationArtifact:
 
 def _reject_non_json_constant(value: str) -> None:
     raise ValueError(f"Non-JSON numeric constant: {value}")
+
+
+def _validate_implementation_manifest(
+    raw_implementation: Any,
+    file_paths: set[str],
+) -> dict[str, Any]:
+    coverage_fields = (
+        "modules",
+        "interfaces",
+        "apis",
+        "persistence_stores",
+    )
+    required = {*coverage_fields, "dependencies", "file_modules"}
+    if (
+        not isinstance(raw_implementation, dict)
+        or set(raw_implementation) != required
+    ):
+        raise BackendGenerationValidationError(
+            "Backend implementation manifest has invalid fields"
+        )
+
+    implementation = {}
+    for field_name in coverage_fields:
+        entries = raw_implementation[field_name]
+        if (
+            not isinstance(entries, list)
+            or not all(
+                isinstance(entry, str) and entry.strip()
+                for entry in entries
+            )
+            or len(set(entries)) != len(entries)
+        ):
+            raise BackendGenerationValidationError(
+                f"Backend implementation {field_name} must contain unique "
+                "non-empty names"
+            )
+        implementation[field_name] = list(entries)
+
+    dependencies = raw_implementation["dependencies"]
+    if (
+        not isinstance(dependencies, list)
+        or not all(
+            isinstance(dependency, str) and dependency.strip()
+            for dependency in dependencies
+        )
+        or len(set(dependencies)) != len(dependencies)
+    ):
+        raise BackendGenerationValidationError(
+            "Backend implementation dependencies must be unique non-empty "
+            "strings"
+        )
+    implementation["dependencies"] = list(dependencies)
+
+    file_modules = raw_implementation["file_modules"]
+    if (
+        not isinstance(file_modules, dict)
+        or set(file_modules) != file_paths
+        or not all(
+            isinstance(module, str)
+            and module in implementation["modules"]
+            for module in file_modules.values()
+        )
+    ):
+        raise BackendGenerationValidationError(
+            "Backend implementation file_modules must map every generated "
+            "file to an implemented module"
+        )
+    implementation["file_modules"] = dict(file_modules)
+    return implementation

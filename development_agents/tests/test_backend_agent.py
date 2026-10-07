@@ -39,6 +39,8 @@ class BackendAgentTests(unittest.TestCase):
             backend_stack={
                 "language": "Python",
                 "framework": "FastAPI",
+                "libraries": ["fastapi"],
+                "persistence_library": "psycopg",
             },
             backend_architecture={
                 "style": "Hexagonal",
@@ -100,7 +102,9 @@ class BackendAgentTests(unittest.TestCase):
             "frontend_architecture": self.project.frontend_architecture,
             "infrastructure": self.project.infrastructure,
             "technical_constraints": self.project.technical_constraints,
-            **usable_architecture_sections(),
+            **usable_architecture_sections(
+                persistence_technology="PostgreSQL"
+            ),
         }
         payload.update(overrides)
         return ArchitectureArtifact.from_json(json.dumps(payload))
@@ -116,21 +120,79 @@ class BackendAgentTests(unittest.TestCase):
             "technical_constraints": self.project.technical_constraints,
             "files": [
                 {
-                    "path": "backend/domain/orders/order.py",
-                    "content": "class Order:\n    pass\n",
+                    "path": "backend/domain/project_record.py",
+                    "content": (
+                        "from dataclasses import dataclass\n\n"
+                        "@dataclass(frozen=True)\n"
+                        "class ProjectRecord:\n"
+                        "    project_id: str\n"
+                        "    status: str\n"
+                    ),
                 },
                 {
-                    "path": "backend/application/commands/create_order.py",
-                    "content": "class CreateOrder:\n    pass\n",
+                    "path": "backend/application/project_reader.py",
+                    "content": (
+                        "from typing import Protocol\n\n"
+                        "from backend.domain.project_record import "
+                        "ProjectRecord\n\n"
+                        "class ProjectReader(Protocol):\n"
+                        "    def read_project(self, project_id: str) -> "
+                        "ProjectRecord:\n"
+                        "        return ProjectRecord(project_id, "
+                        "'declared')\n"
+                    ),
                 },
                 {
                     "path": (
                         "backend/infrastructure/postgres/"
-                        "order_repository.py"
+                        "project_reader.py"
                     ),
-                    "content": "class PostgresOrderRepository:\n    pass\n",
+                    "content": (
+                        "import psycopg\n\n"
+                        "from backend.domain.project_record import "
+                        "ProjectRecord\n\n"
+                        "class PostgresProjectReader:\n"
+                        "    def __init__(self, connection: "
+                        "psycopg.Connection):\n"
+                        "        self.connection = connection\n\n"
+                        "    def read_project(self, project_id: str) -> "
+                        "ProjectRecord:\n"
+                        "        with self.connection.cursor() as cursor:\n"
+                        "            cursor.execute('SELECT status FROM "
+                        "projects WHERE id = %s', (project_id,))\n"
+                        "            row = cursor.fetchone()\n"
+                        "        if row is None:\n"
+                        "            raise LookupError(project_id)\n"
+                        "        return ProjectRecord(project_id, row[0])\n"
+                    ),
+                },
+                {
+                    "path": "backend/api.py",
+                    "content": (
+                        "from fastapi import FastAPI\n\n"
+                        "app = FastAPI()\n\n"
+                        "@app.get('/projects/{project_id}')\n"
+                        "def get_project(project_id: str) -> dict[str, str]:\n"
+                        "    return {'project_id': project_id, "
+                        "'status': 'available'}\n"
+                    ),
                 },
             ],
+            "implementation": {
+                "modules": ["backend"],
+                "interfaces": ["ProjectReader"],
+                "apis": ["project-api"],
+                "persistence_stores": ["primary"],
+                "dependencies": ["fastapi", "psycopg"],
+                "file_modules": {
+                    "backend/domain/project_record.py": "backend",
+                    "backend/application/project_reader.py": "backend",
+                    (
+                        "backend/infrastructure/postgres/project_reader.py"
+                    ): "backend",
+                    "backend/api.py": "backend",
+                },
+            },
             "summary": "Implemented order creation",
         }
         payload.update(overrides)
@@ -191,7 +253,7 @@ class BackendAgentTests(unittest.TestCase):
             self.generation_output,
         )
         written_files = self.workspace.write_files.call_args.args[1]
-        self.assertEqual(len(written_files), 3)
+        self.assertEqual(len(written_files), 4)
         self.assertEqual(self.task.status, TaskStatus.COMPLETED)
 
     def test_engine_context_derives_every_rule_from_the_project(self):
@@ -360,6 +422,14 @@ class BackendAgentTests(unittest.TestCase):
             status="needs_input",
             missing_decisions=["Order identifier format"],
             files=[],
+            implementation={
+                "modules": [],
+                "interfaces": [],
+                "apis": [],
+                "persistence_stores": [],
+                "dependencies": [],
+                "file_modules": {},
+            },
             summary="Order identifier decision is required",
         )
         self.engine.run.return_value = EngineResult(
@@ -380,6 +450,114 @@ class BackendAgentTests(unittest.TestCase):
                 call(self.task.id, TaskStatus.NEEDS_INPUT),
             ],
         )
+
+    def test_missing_persistence_library_requires_input_before_engine(self):
+        self.project.backend_stack.pop("persistence_library")
+        self.architecture = self._architecture()
+        self.workspace.read_architecture.return_value = self.architecture
+
+        self.agent.handle(self.task)
+
+        self.engine.run.assert_not_called()
+        self.workspace.write_files.assert_not_called()
+        persisted = self.task_result_writer.write.call_args.args[0]
+        self.assertEqual(
+            json.loads(persisted.output)["missing_decisions"],
+            ["backend_persistence_library"],
+        )
+        self.assertEqual(self.task.status, TaskStatus.NEEDS_INPUT)
+
+    def test_rejects_incomplete_or_invalid_python_before_persistence(self):
+        invalid_contents = (
+            "class ProjectRecord:\n    pass\n",
+            "class ProjectRecord(:\n",
+            "from missing.module import ProjectRecord\n",
+            "missing_reference()\n",
+        )
+        for content in invalid_contents:
+            with self.subTest(content=content):
+                output = self._generation_output()
+                output["files"][0]["content"] = content
+                self.engine.run.return_value = EngineResult(
+                    output=json.dumps(output),
+                    metadata={},
+                    provider="test",
+                )
+
+                with self.assertRaises(BackendGenerationValidationError):
+                    self.agent.handle(self.task)
+
+                self.task_result_writer.write.assert_not_called()
+                self.workspace.write_files.assert_not_called()
+                self.task_status_writer.reset_mock()
+                self.task.status = TaskStatus.PENDING
+
+    def test_rejects_incompatible_internal_constructor_before_persistence(
+        self,
+    ):
+        output = self._generation_output()
+        output["files"][0]["content"] = (
+            "class ProjectRecord:\n"
+            "    project_id: str\n"
+            "    status: str\n"
+        )
+        self.engine.run.return_value = EngineResult(
+            output=json.dumps(output),
+            metadata={},
+            provider="test",
+        )
+
+        with self.assertRaisesRegex(
+            BackendGenerationValidationError,
+            "incompatible internal constructor ProjectRecord",
+        ):
+            self.agent.handle(self.task)
+
+        self.task_result_writer.write.assert_not_called()
+        self.workspace.write_files.assert_not_called()
+        self.assertEqual(self.task.status, TaskStatus.FAILED)
+
+    def test_rejects_manifest_or_api_that_contradicts_architecture(self):
+        outputs = []
+        wrong_module = self._generation_output()
+        wrong_module["implementation"]["modules"][0] = "other"
+        wrong_module["implementation"]["file_modules"] = {
+            path: "other"
+            for path in wrong_module["implementation"]["file_modules"]
+        }
+        outputs.append(wrong_module)
+
+        wrong_api = self._generation_output()
+        wrong_api["files"][-1]["content"] = wrong_api["files"][-1][
+            "content"
+        ].replace("/projects/{project_id}", "/other")
+        outputs.append(wrong_api)
+
+        undeclared_dependency = self._generation_output()
+        undeclared_dependency["files"][-1]["content"] = (
+            "import requests\n"
+            + undeclared_dependency["files"][-1]["content"]
+        )
+        undeclared_dependency["implementation"]["dependencies"].append(
+            "requests"
+        )
+        outputs.append(undeclared_dependency)
+
+        for output in outputs:
+            with self.subTest(output=output):
+                self.engine.run.return_value = EngineResult(
+                    output=json.dumps(output),
+                    metadata={},
+                    provider="test",
+                )
+
+                with self.assertRaises(BackendGenerationValidationError):
+                    self.agent.handle(self.task)
+
+                self.task_result_writer.write.assert_not_called()
+                self.workspace.write_files.assert_not_called()
+                self.task_status_writer.reset_mock()
+                self.task.status = TaskStatus.PENDING
 
     def test_result_persistence_failure_prevents_workspace_write(self):
         self.task_result_writer.write.side_effect = RuntimeError(
