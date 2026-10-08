@@ -117,9 +117,17 @@ class EngineStubTests(unittest.TestCase):
         )
         body = json.loads(request.data)
         self.assertEqual(body["model"], "architecture-primary")
+        self.assertEqual(body["temperature"], 0)
         self.assertEqual(
             body["response_format"],
-            {"type": "json_object"},
+            {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "agentforge_output",
+                    "strict": True,
+                    "schema": {"type": "object"},
+                },
+            },
         )
         instruction = json.loads(body["messages"][1]["content"])
         self.assertEqual(instruction["task"]["title"], self.task.title)

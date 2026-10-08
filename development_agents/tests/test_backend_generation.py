@@ -108,6 +108,20 @@ class BackendGenerationArtifactTests(unittest.TestCase):
         ):
             BackendGenerationArtifact.from_json(json.dumps(payload))
 
+    def test_single_module_derives_unambiguous_file_mapping(self):
+        payload = valid_payload()
+        payload["implementation"]["file_modules"] = {}
+
+        artifact = BackendGenerationArtifact.from_json(json.dumps(payload))
+
+        self.assertEqual(
+            artifact.implementation["file_modules"],
+            {
+                "backend/application/create_order.py": "orders",
+                "backend/domain/orders/order.py": "orders",
+            },
+        )
+
     def test_manifest_references_only_generated_files(self):
         payload = valid_payload()
         payload["implementation"]["file_modules"]["backend/missing.py"] = (

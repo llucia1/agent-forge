@@ -383,18 +383,30 @@ def _validate_implementation_manifest(
     implementation["dependencies"] = list(dependencies)
 
     file_modules = raw_implementation["file_modules"]
-    if (
-        not isinstance(file_modules, dict)
-        or set(file_modules) != file_paths
-        or not all(
-            isinstance(module, str)
-            and module in implementation["modules"]
-            for module in file_modules.values()
+    if not isinstance(file_modules, dict):
+        raise BackendGenerationValidationError(
+            "Backend implementation file_modules must be an object"
         )
-    ):
+    if not file_modules and len(implementation["modules"]) == 1:
+        module = implementation["modules"][0]
+        file_modules = {
+            path: module
+            for path in sorted(file_paths)
+        }
+    missing_paths = sorted(file_paths.difference(file_modules))
+    unknown_paths = sorted(set(file_modules).difference(file_paths))
+    invalid_modules = sorted(
+        path
+        for path, module in file_modules.items()
+        if not isinstance(module, str)
+        or module not in implementation["modules"]
+    )
+    if missing_paths or unknown_paths or invalid_modules:
         raise BackendGenerationValidationError(
             "Backend implementation file_modules must map every generated "
-            "file to an implemented module"
+            "file to an implemented module; "
+            f"missing_paths={missing_paths}, unknown_paths={unknown_paths}, "
+            f"invalid_modules={invalid_modules}"
         )
     implementation["file_modules"] = dict(file_modules)
     return implementation

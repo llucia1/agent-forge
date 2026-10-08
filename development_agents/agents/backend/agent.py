@@ -72,6 +72,7 @@ PERSISTENCE_DEPENDENCY_KEYS = frozenset(
 )
 
 PLACEHOLDER_MARKERS = ("todo", "fixme", "placeholder")
+MAX_GENERATION_ATTEMPTS = 3
 
 
 class BackendAgent(TaskHandler):
@@ -147,23 +148,47 @@ class BackendAgent(TaskHandler):
                 return
 
             existing_files = self.workspace.read_files(task.project_id)
-            engine_result = self.process(
-                task,
-                project,
-                architecture,
-                existing_files,
-            )
-            generation = BackendGenerationArtifact.from_json(
-                engine_result.output
-            )
-            self._validate_backend_authority(project, generation)
-            if generation.status is BackendGenerationStatus.COMPLETE:
-                self._validate_complete_generation(
+            validation_feedback = None
+            for attempt in range(1, MAX_GENERATION_ATTEMPTS + 1):
+                engine_result = self.process(
+                    task,
                     project,
                     architecture,
-                    generation,
                     existing_files,
+                    validation_feedback,
                 )
+                try:
+                    generation = BackendGenerationArtifact.from_json(
+                        engine_result.output
+                    )
+                    self._validate_backend_authority(project, generation)
+                    if generation.status is BackendGenerationStatus.COMPLETE:
+                        self._validate_complete_generation(
+                            project,
+                            architecture,
+                            generation,
+                            existing_files,
+                        )
+                    break
+                except BackendGenerationValidationError as error:
+                    if attempt == MAX_GENERATION_ATTEMPTS:
+                        raise
+                    validation_feedback = {
+                        "attempt": attempt,
+                        "validation_error": str(error),
+                        "previous_output": engine_result.output,
+                        "instruction": (
+                            "Return the full corrected artifact. Preserve "
+                            "Project and architecture values exactly and "
+                            "change only what is required to satisfy the "
+                            "validation error. Undefined names must be "
+                            "explicitly imported or defined in the same "
+                            "file. For nullable annotations use Python 3.12 "
+                            "union syntax instead of Optional. Never replace "
+                            "a missing symbol with an undeclared external "
+                            "package."
+                        ),
+                    }
             self._persist_result(task, engine_result, generation)
 
             if generation.status is BackendGenerationStatus.NEEDS_INPUT:
@@ -185,16 +210,22 @@ class BackendAgent(TaskHandler):
         project: Project,
         architecture: ArchitectureArtifact,
         existing_files: list[WorkspaceFile],
+        validation_feedback: dict[str, Any] | None = None,
     ) -> EngineResult:
         context = {
             **self.context_provider.build(task, project),
-            "output_contract": self._output_contract(project),
+            "output_contract": self._output_contract(
+                project,
+                architecture,
+            ),
             "backend_implementation": self._implementation_context(
                 project,
                 architecture,
                 existing_files,
             ),
         }
+        if validation_feedback is not None:
+            context["backend_validation_feedback"] = validation_feedback
         return self.engine.run(
             task=task,
             project=project,
@@ -261,7 +292,11 @@ class BackendAgent(TaskHandler):
         }
 
     @classmethod
-    def _output_contract(cls, project: Project) -> dict[str, Any]:
+    def _output_contract(
+        cls,
+        project: Project,
+        architecture: ArchitectureArtifact,
+    ) -> dict[str, Any]:
         contract = BackendGenerationArtifact.output_contract()
         authoritative = cls._authoritative_backend(project)
         properties = contract["properties"]
@@ -269,6 +304,44 @@ class BackendAgent(TaskHandler):
             field_contract = dict(properties[field_name])
             field_contract["const"] = value
             properties[field_name] = field_contract
+
+        requirements = cls._backend_requirements(architecture)
+        module_packages = {
+            module: f"backend/{_python_package_name(module)}"
+            for module in requirements["modules"]
+        }
+        implementation = properties["implementation"]["properties"]
+        for field_name, value in requirements.items():
+            field_contract = dict(implementation[field_name])
+            field_contract["const"] = value
+            implementation[field_name] = field_contract
+        dependency_contract = dict(implementation["dependencies"])
+        dependency_contract["const"] = cls._declared_dependencies(project)
+        implementation["dependencies"] = dependency_contract
+        if len(requirements["modules"]) == 1:
+            implementation["file_modules"] = {
+                "type": "object",
+                "const": {},
+            }
+        else:
+            implementation["file_modules"]["additionalProperties"] = {
+                "type": "string",
+                "enum": requirements["modules"],
+            }
+
+        file_contract = properties["files"]["items"]["properties"]
+        package_pattern = "|".join(
+            re.escape(package)
+            for package in module_packages.values()
+        )
+        file_contract["path"] = {
+            "type": "string",
+            "pattern": rf"^(?:{package_pattern})/.+$",
+        }
+        file_contract["content"] = {
+            "type": "string",
+            "minLength": 1,
+        }
 
         contract["instruction"] = (
             f"{contract['instruction']} The Project and validated "
@@ -280,6 +353,16 @@ class BackendAgent(TaskHandler):
             "architecture module, and the implementation manifest must cover "
             "the exact backend modules, interfaces, APIs and persistence "
             "stores. List only imported external packages in dependencies. "
+            "The complete set of permitted external import roots is "
+            f"{json.dumps(cls._declared_dependencies(project))}; do not "
+            "import transitive or implicit packages outside that list. "
+            "Every internal import must be the exact dotted form of another "
+            "generated or existing Python file path; never turn logical "
+            "architecture module names into undeclared package aliases. "
+            "Use this exact architecture-module to Python-package mapping: "
+            f"{json.dumps(module_packages, sort_keys=True)}. "
+            "When there is exactly one backend module, return an empty "
+            "file_modules object; AgentForge derives that unambiguous map. "
             "Do not emit pass, ellipsis, TODO, FIXME, placeholders, missing "
             "imports, undefined references or undeclared packages. If a "
             "required decision is absent, return needs_input with no files "
@@ -329,10 +412,16 @@ class BackendAgent(TaskHandler):
                 project.technical_constraints
             )
         )
-        return {
+        implementation_context = {
             "mandatory_rules": mandatory_rules,
             "architecture_artifact": architecture.to_dict(),
             "backend_requirements": cls._backend_requirements(architecture),
+            "module_packages": {
+                module: f"backend/{_python_package_name(module)}"
+                for module in cls._backend_requirements(architecture)[
+                    "modules"
+                ]
+            },
             "authorized_dependencies": cls._declared_dependencies(project),
             "persistence_dependencies": cls._declared_dependencies(
                 project,
@@ -346,6 +435,42 @@ class BackendAgent(TaskHandler):
                 for workspace_file in existing_files
             ],
         }
+        if (
+            str(project.backend_stack.get("language", "")).casefold()
+            == "python"
+        ):
+            implementation_context["python_generation_rules"] = [
+                (
+                    "Represent domain data models with standard-library "
+                    "dataclasses unless an alternative modeling package is "
+                    "explicitly authorized."
+                ),
+                (
+                    "Use only the declared persistence library directly; "
+                    "do not import an ORM or its transitive packages unless "
+                    "the Project explicitly declares it."
+                ),
+                (
+                    "Import declared package names literally; when psycopg "
+                    "is declared, use import psycopg and never psycopg2."
+                ),
+                (
+                    "Import every FastAPI symbol from fastapi in each Python "
+                    "file where that symbol is referenced."
+                ),
+                (
+                    "FastAPI route parameters may contain request data or "
+                    "dependencies declared with Depends. Never annotate a "
+                    "route parameter with a plain service class and default "
+                    "it to None; instantiate that service inside the route "
+                    "or inject it with Depends."
+                ),
+                (
+                    "Use Python 3.12 PEP 604 union syntax such as Task | "
+                    "None; never use typing.Optional."
+                ),
+            ]
+        return implementation_context
 
     @staticmethod
     def _validate_architecture_authority(
@@ -587,6 +712,13 @@ def _dependency_root(value: str) -> str:
     return candidate.replace("-", "_").casefold()
 
 
+def _python_package_name(module_name: str) -> str:
+    package = re.sub(r"[^a-zA-Z0-9_]", "_", module_name).casefold()
+    if package[:1].isdigit():
+        package = f"module_{package}"
+    return package
+
+
 def _validate_python_workspace(
     files: dict[str, WorkspaceFile],
     generated_paths: set[str],
@@ -651,7 +783,86 @@ def _validate_python_workspace(
                         )
                     )
     _reject_incompatible_internal_constructor_calls(parsed_trees)
+    _reject_invalid_fastapi_route_parameters(parsed_trees)
     return imported_dependencies
+
+
+def _reject_invalid_fastapi_route_parameters(
+    trees: dict[str, ast.Module],
+) -> None:
+    plain_classes = {
+        node.name
+        for tree in trees.values()
+        for node in tree.body
+        if isinstance(node, ast.ClassDef)
+        and not node.bases
+        and not any(
+            _decorator_name(decorator) == "dataclass"
+            for decorator in node.decorator_list
+        )
+    }
+    if not plain_classes:
+        return
+
+    http_methods = {
+        "delete",
+        "get",
+        "head",
+        "options",
+        "patch",
+        "post",
+        "put",
+        "trace",
+    }
+    for path, tree in trees.items():
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            if not any(
+                isinstance(decorator, ast.Call)
+                and isinstance(decorator.func, ast.Attribute)
+                and decorator.func.attr.casefold() in http_methods
+                for decorator in node.decorator_list
+            ):
+                continue
+            arguments = [*node.args.posonlyargs, *node.args.args]
+            defaults = [
+                None,
+            ] * (len(arguments) - len(node.args.defaults)) + list(
+                node.args.defaults
+            )
+            parameters = [
+                *zip(arguments, defaults, strict=True),
+                *zip(
+                    node.args.kwonlyargs,
+                    node.args.kw_defaults,
+                    strict=True,
+                ),
+            ]
+            for argument, default in parameters:
+                annotation_names = {
+                    child.id
+                    for child in ast.walk(argument.annotation)
+                    if isinstance(child, ast.Name)
+                } if argument.annotation is not None else set()
+                invalid_classes = annotation_names.intersection(
+                    plain_classes
+                )
+                if not invalid_classes or _is_depends_call(default):
+                    continue
+                raise BackendGenerationValidationError(
+                    "Backend FastAPI route parameter "
+                    f"{argument.arg} in {path} uses plain service class "
+                    f"{sorted(invalid_classes)[0]}; instantiate it inside "
+                    "the route or inject it with fastapi.Depends"
+                )
+
+
+def _is_depends_call(node: ast.expr | None) -> bool:
+    return (
+        isinstance(node, ast.Call)
+        and _decorator_name(node.func) == "Depends"
+    )
 
 
 def _reject_incompatible_internal_constructor_calls(

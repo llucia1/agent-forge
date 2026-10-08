@@ -8,10 +8,10 @@ model_list:
     litellm_params:
       model: os.environ/LITELLM_GENERAL_MODEL
       api_base: os.environ/OLLAMA_BASE_URL
+      num_ctx: 8192
 
 litellm_settings:
   master_key: os.environ/LITELLM_MASTER_KEY
-
 
 
 

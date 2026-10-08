@@ -256,6 +256,34 @@ class BackendAgentTests(unittest.TestCase):
         self.assertEqual(len(written_files), 4)
         self.assertEqual(self.task.status, TaskStatus.COMPLETED)
 
+    def test_retries_once_with_validation_feedback_before_persisting(self):
+        invalid_output = json.loads(json.dumps(self.generation_output))
+        invalid_output["files"][0]["path"] = "../outside.py"
+        self.engine.run.side_effect = [
+            EngineResult(
+                output=json.dumps(invalid_output),
+                metadata={"attempt": 1},
+                provider="litellm",
+                model_alias="qwen-coder",
+            ),
+            self.engine_result,
+        ]
+
+        self.agent.handle(self.task)
+
+        self.assertEqual(self.engine.run.call_count, 2)
+        retry_context = self.engine.run.call_args.kwargs["context"]
+        feedback = retry_context["backend_validation_feedback"]
+        self.assertEqual(feedback["attempt"], 1)
+        self.assertIn("unsafe path", feedback["validation_error"])
+        self.assertEqual(
+            json.loads(feedback["previous_output"]),
+            invalid_output,
+        )
+        self.task_result_writer.write.assert_called_once()
+        self.workspace.write_files.assert_called_once()
+        self.assertEqual(self.task.status, TaskStatus.COMPLETED)
+
     def test_engine_context_derives_every_rule_from_the_project(self):
         self.agent.handle(self.task)
 
@@ -273,6 +301,31 @@ class BackendAgentTests(unittest.TestCase):
                     "content": "Existing backend\n",
                 }
             ],
+        )
+        self.assertEqual(
+            implementation["module_packages"],
+            {"backend": "backend/backend"},
+        )
+        self.assertEqual(len(implementation["python_generation_rules"]), 6)
+        self.assertIn(
+            "dataclasses",
+            implementation["python_generation_rules"][0],
+        )
+        self.assertIn(
+            "persistence library",
+            implementation["python_generation_rules"][1],
+        )
+        self.assertIn(
+            "never psycopg2",
+            implementation["python_generation_rules"][2],
+        )
+        self.assertIn(
+            "FastAPI route parameters",
+            implementation["python_generation_rules"][4],
+        )
+        self.assertIn(
+            "PEP 604",
+            implementation["python_generation_rules"][5],
         )
         requirements = {
             item["source"]: item["requirement"]
@@ -302,6 +355,40 @@ class BackendAgentTests(unittest.TestCase):
                 ],
                 getattr(self.project, field_name),
             )
+        contract = context["output_contract"]["properties"]
+        self.assertIn(
+            "exact dotted form",
+            context["output_contract"]["instruction"],
+        )
+        implementation_contract = contract["implementation"]["properties"]
+        self.assertEqual(
+            implementation_contract["modules"]["const"],
+            ["backend"],
+        )
+        self.assertEqual(
+            implementation_contract["interfaces"]["const"],
+            ["ProjectReader"],
+        )
+        self.assertEqual(
+            implementation_contract["apis"]["const"],
+            ["project-api"],
+        )
+        self.assertEqual(
+            implementation_contract["persistence_stores"]["const"],
+            ["primary"],
+        )
+        self.assertEqual(
+            implementation_contract["dependencies"]["const"],
+            ["fastapi", "psycopg"],
+        )
+        self.assertEqual(
+            implementation_contract["file_modules"],
+            {"type": "object", "const": {}},
+        )
+        self.assertEqual(
+            contract["files"]["items"]["properties"]["path"]["pattern"],
+            r"^(?:backend/backend)/.+$",
+        )
 
     def test_does_not_add_architectural_patterns_from_another_project(self):
         self.project.backend_architecture = {"style": "layered"}
@@ -513,6 +600,37 @@ class BackendAgentTests(unittest.TestCase):
         ):
             self.agent.handle(self.task)
 
+        self.task_result_writer.write.assert_not_called()
+        self.workspace.write_files.assert_not_called()
+        self.assertEqual(self.task.status, TaskStatus.FAILED)
+
+    def test_rejects_plain_service_class_as_fastapi_route_parameter(self):
+        output = self._generation_output()
+        output["files"][-1]["content"] = (
+            "from fastapi import FastAPI\n\n"
+            "app = FastAPI()\n\n"
+            "class ProjectReader:\n"
+            "    def read_project(self, project_id: str) -> str:\n"
+            "        return project_id\n\n"
+            "@app.get('/projects/{project_id}')\n"
+            "def get_project(project_id: str, reader: ProjectReader = None) "
+            "-> dict[str, str]:\n"
+            "    return {'project_id': reader.read_project(project_id), "
+            "'status': 'available'}\n"
+        )
+        self.engine.run.return_value = EngineResult(
+            output=json.dumps(output),
+            metadata={},
+            provider="test",
+        )
+
+        with self.assertRaisesRegex(
+            BackendGenerationValidationError,
+            "FastAPI route parameter reader",
+        ):
+            self.agent.handle(self.task)
+
+        self.assertEqual(self.engine.run.call_count, 3)
         self.task_result_writer.write.assert_not_called()
         self.workspace.write_files.assert_not_called()
         self.assertEqual(self.task.status, TaskStatus.FAILED)

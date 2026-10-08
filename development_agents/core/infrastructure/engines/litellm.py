@@ -121,7 +121,17 @@ class LiteLLMEngine(AgentEngine):
             ],
         }
         if context is not None and "output_contract" in context:
-            payload["response_format"] = {"type": "json_object"}
+            output_contract = dict(context["output_contract"])
+            output_contract.pop("instruction", None)
+            payload["temperature"] = 0
+            payload["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "agentforge_output",
+                    "strict": True,
+                    "schema": output_contract,
+                },
+            }
 
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
 
