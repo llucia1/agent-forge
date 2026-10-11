@@ -39,7 +39,7 @@ class FrontendAgentTests(unittest.TestCase):
             backend_stack={"language": "Python"},
             backend_architecture={"style": "ports"},
             frontend_stack={
-                "language": "TypeScript",
+                "language": "JavaScript",
                 "ui": "ProjectUI",
             },
             frontend_architecture={"style": "component-based"},
@@ -123,14 +123,29 @@ class FrontendAgentTests(unittest.TestCase):
                 {
                     "path": "frontend/package.json",
                     "content": (
-                        '{"scripts":{"build":"project-build"}}\n'
+                        '{"scripts":{"build":"node --check '
+                        'src/components/order-list.js"}}\n'
                     ),
                 },
                 {
-                    "path": "frontend/src/components/order-list.tsx",
-                    "content": "export const OrderList = () => null;\n",
+                    "path": "frontend/src/components/order-list.js",
+                    "content": (
+                        "export async function read_project(project_id) {\n"
+                        "  const path = '/projects/{project_id}'.replace("
+                        "'{project_id}', project_id);\n"
+                        "  return fetch(path, {method: 'GET'});\n"
+                        "}\n"
+                        "export const get_project = read_project;\n"
+                    ),
                 },
             ],
+            "implementation": {
+                "modules": ["frontend"],
+                "interfaces": ["ProjectReader"],
+                "apis": ["project-api"],
+                "dependencies": [],
+                "file_modules": {},
+            },
             "summary": "Implemented the order interface",
         }
         payload.update(overrides)
@@ -186,7 +201,12 @@ class FrontendAgentTests(unittest.TestCase):
         self.assertEqual(persisted.provider, "litellm")
         self.assertEqual(persisted.model_alias, "project-code-model")
         self.assertEqual(persisted.metadata, {"tokens": 318})
-        self.assertEqual(json.loads(persisted.output), self.generation_output)
+        expected_output = json.loads(json.dumps(self.generation_output))
+        expected_output["implementation"]["file_modules"] = {
+            "frontend/package.json": "frontend",
+            "frontend/src/components/order-list.js": "frontend",
+        }
+        self.assertEqual(json.loads(persisted.output), expected_output)
         self.assertEqual(
             len(self.workspace.write_files.call_args.args[1]),
             2,
@@ -235,6 +255,29 @@ class FrontendAgentTests(unittest.TestCase):
                 ],
                 getattr(self.project, field_name),
             )
+        self.assertEqual(
+            implementation["frontend_requirements"],
+            {
+                "modules": ["frontend"],
+                "interfaces": ["ProjectReader"],
+                "apis": ["project-api"],
+            },
+        )
+        self.assertEqual(implementation["authorized_dependencies"], [])
+        manifest = context["output_contract"]["properties"][
+            "implementation"
+        ]["properties"]
+        self.assertEqual(manifest["modules"]["const"], ["frontend"])
+        self.assertEqual(
+            manifest["interfaces"]["const"],
+            ["ProjectReader"],
+        )
+        self.assertEqual(manifest["apis"]["const"], ["project-api"])
+        self.assertEqual(manifest["dependencies"]["const"], [])
+        self.assertEqual(
+            manifest["file_modules"],
+            {"type": "object", "const": {}},
+        )
 
     def test_does_not_add_technologies_from_other_projects(self):
         self.agent.handle(self.task)
@@ -305,6 +348,26 @@ class FrontendAgentTests(unittest.TestCase):
         )
         self.assertEqual(self.task.status, TaskStatus.NEEDS_INPUT)
 
+    def test_typescript_without_declared_build_tool_needs_input(self):
+        self.project.frontend_stack = {
+            "language": "TypeScript",
+            "framework": "React",
+        }
+        self.workspace.read_architecture.return_value = self._architecture()
+
+        self.agent.handle(self.task)
+
+        self.engine.run.assert_not_called()
+        self.workspace.write_files.assert_not_called()
+        payload = json.loads(
+            self.task_result_writer.write.call_args.args[0].output
+        )
+        self.assertEqual(
+            payload["missing_decisions"],
+            ["frontend_build_tool"],
+        )
+        self.assertEqual(self.task.status, TaskStatus.NEEDS_INPUT)
+
     def test_empty_technical_constraints_remains_complete(self):
         self.project.technical_constraints = []
         self.workspace.read_architecture.return_value = self._architecture()
@@ -363,6 +426,13 @@ class FrontendAgentTests(unittest.TestCase):
             status="needs_input",
             missing_decisions=["route authorization behavior"],
             files=[],
+            implementation={
+                "modules": [],
+                "interfaces": [],
+                "apis": [],
+                "dependencies": [],
+                "file_modules": {},
+            },
             summary="Route authorization behavior is required",
         )
         self.engine.run.return_value = EngineResult(
@@ -394,6 +464,183 @@ class FrontendAgentTests(unittest.TestCase):
 
         self.workspace.write_files.assert_not_called()
         self.assertEqual(self.task.status, TaskStatus.FAILED)
+
+    def test_retries_validation_failure_before_persisting(self):
+        invalid_output = self._generation_output()
+        invalid_output["files"][1]["content"] = (
+            "// TODO implement read_project GET /projects/{project_id}\n"
+        )
+        self.engine.run.side_effect = [
+            EngineResult(
+                output=json.dumps(invalid_output),
+                metadata={"attempt": 1},
+                provider="litellm",
+            ),
+            self.engine_result,
+        ]
+
+        self.agent.handle(self.task)
+
+        self.assertEqual(self.engine.run.call_count, 2)
+        feedback = self.engine.run.call_args.kwargs["context"][
+            "frontend_validation_feedback"
+        ]
+        self.assertIn("placeholder", feedback["validation_error"])
+        self.task_result_writer.write.assert_called_once()
+        self.workspace.write_files.assert_called_once()
+        self.assertEqual(self.task.status, TaskStatus.COMPLETED)
+
+    def test_accepts_runtime_substitution_of_api_path_parameter(self):
+        output = self._generation_output()
+        output["files"][1]["content"] = (
+            "export async function read_project(projectId) {\n"
+            "  const path = `/projects/${projectId}`;\n"
+            "  return fetch(path, {method: 'GET'});\n"
+            "}\n"
+            "export const get_project = read_project;\n"
+        )
+        self.engine.run.return_value = EngineResult(
+            output=json.dumps(output),
+            metadata={},
+            provider="test",
+        )
+
+        self.agent.handle(self.task)
+
+        self.workspace.write_files.assert_called_once()
+        self.assertEqual(self.task.status, TaskStatus.COMPLETED)
+
+    def test_rejects_example_placeholder_source(self):
+        output = self._generation_output()
+        output["files"][1]["content"] += (
+            "// Example usage:\n"
+            "get_project('example-project-id');\n"
+        )
+        self.engine.run.return_value = EngineResult(
+            output=json.dumps(output),
+            metadata={},
+            provider="test",
+        )
+
+        with self.assertRaises(FrontendGenerationValidationError):
+            self.agent.handle(self.task)
+
+        self.task_result_writer.write.assert_not_called()
+        self.workspace.write_files.assert_not_called()
+        self.assertEqual(self.task.status, TaskStatus.FAILED)
+
+    def test_rejects_undeclared_dependency_and_missing_relative_import(self):
+        invalid_sources = (
+            "import React from 'react';\n"
+            "export const read_project = () => 'GET /projects/{project_id}';\n"
+            "export const get_project = read_project;\n",
+            "import {missing} from './missing';\n"
+            "export const read_project = () => 'GET /projects/{project_id}';\n"
+            "export const get_project = read_project;\n",
+            "import {Missing} from './existing';\n"
+            "export const read_project = () => 'GET /projects/{project_id}';\n"
+            "export const get_project = read_project;\n",
+        )
+        for source in invalid_sources:
+            with self.subTest(source=source):
+                output = self._generation_output()
+                output["files"][1]["content"] = source
+                self.engine.run.return_value = EngineResult(
+                    output=json.dumps(output),
+                    metadata={},
+                    provider="test",
+                )
+
+                with self.assertRaises(FrontendGenerationValidationError):
+                    self.agent.handle(self.task)
+
+                self.task_result_writer.write.assert_not_called()
+                self.workspace.write_files.assert_not_called()
+                self.task_status_writer.reset_mock()
+                self.engine.reset_mock()
+                self.task.status = TaskStatus.PENDING
+
+    def test_rejects_package_manifest_or_architecture_coverage_mismatch(self):
+        wrong_package = self._generation_output()
+        wrong_package["files"][0]["content"] = json.dumps(
+            {
+                "scripts": {"build": "project-build"},
+                "dependencies": {"react": "1.0.0"},
+            }
+        )
+        wrong_api = self._generation_output()
+        wrong_api["implementation"]["apis"] = []
+        no_op_build = self._generation_output()
+        no_op_build["files"][0]["content"] = json.dumps(
+            {"scripts": {"build": "echo built"}}
+        )
+
+        for output in (wrong_package, wrong_api, no_op_build):
+            with self.subTest(output=output):
+                self.engine.run.return_value = EngineResult(
+                    output=json.dumps(output),
+                    metadata={},
+                    provider="test",
+                )
+
+                with self.assertRaises(FrontendGenerationValidationError):
+                    self.agent.handle(self.task)
+
+                self.task_result_writer.write.assert_not_called()
+                self.workspace.write_files.assert_not_called()
+                self.task_status_writer.reset_mock()
+                self.engine.reset_mock()
+                self.task.status = TaskStatus.PENDING
+
+    def test_declared_framework_and_libraries_are_exact_dependencies(self):
+        self.project.frontend_stack = {
+            "language": "TypeScript",
+            "framework": "React@18",
+            "libraries": ["@project/ui@2", "TypeScript@5"],
+        }
+        self.architecture = self._architecture()
+        self.workspace.read_architecture.return_value = self.architecture
+        output = self._generation_output(
+            frontend_stack=self.project.frontend_stack,
+        )
+        output["files"][1]["path"] = (
+            "frontend/src/components/order-list.tsx"
+        )
+        output["files"][0]["content"] = json.dumps(
+            {
+                "scripts": {"build": "tsc --noEmit"},
+                "dependencies": {
+                    "react": "18.0.0",
+                    "@project/ui": "2.0.0",
+                },
+                "devDependencies": {"typescript": "5.0.0"},
+            }
+        )
+        output["files"][1]["content"] = (
+            "import React from 'react';\n"
+            "import '@project/ui/theme';\n"
+            + output["files"][1]["content"]
+        )
+        output["implementation"]["dependencies"] = [
+            "react",
+            "@project/ui",
+            "typescript",
+        ]
+        self.engine.run.return_value = EngineResult(
+            output=json.dumps(output),
+            metadata={},
+            provider="test",
+        )
+
+        self.agent.handle(self.task)
+
+        context = self.engine.run.call_args.kwargs["context"]
+        self.assertEqual(
+            context["frontend_implementation"]["authorized_dependencies"],
+            ["react", "@project/ui", "typescript"],
+        )
+        self.workspace.write_files.assert_called_once()
+        self.assertEqual(self.task.status, TaskStatus.COMPLETED)
 
     def test_workspace_failure_occurs_after_result_and_marks_failed(self):
         events = []

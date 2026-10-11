@@ -30,6 +30,16 @@ def valid_payload():
                 "content": "export const OrderList = () => null;\n",
             },
         ],
+        "implementation": {
+            "modules": ["frontend"],
+            "interfaces": ["ProjectReader"],
+            "apis": ["project-api"],
+            "dependencies": [],
+            "file_modules": {
+                "frontend/package.json": "frontend",
+                "frontend/src/components/order-list.tsx": "frontend",
+            },
+        },
         "summary": "Implemented the project frontend",
     }
 
@@ -54,6 +64,13 @@ class FrontendGenerationArtifactTests(unittest.TestCase):
             status="needs_input",
             missing_decisions=["routing strategy"],
             files=[],
+            implementation={
+                "modules": [],
+                "interfaces": [],
+                "apis": [],
+                "dependencies": [],
+                "file_modules": {},
+            },
         )
 
         artifact = FrontendGenerationArtifact.from_json(json.dumps(payload))
@@ -70,10 +87,38 @@ class FrontendGenerationArtifactTests(unittest.TestCase):
     def test_complete_requires_at_least_one_file(self):
         payload = valid_payload()
         payload["files"] = []
+        payload["implementation"]["file_modules"] = {}
 
         with self.assertRaisesRegex(
             FrontendGenerationValidationError,
             "must contain files",
+        ):
+            FrontendGenerationArtifact.from_json(json.dumps(payload))
+
+    def test_single_module_derives_unambiguous_file_mapping(self):
+        payload = valid_payload()
+        payload["implementation"]["file_modules"] = {}
+
+        artifact = FrontendGenerationArtifact.from_json(json.dumps(payload))
+
+        self.assertEqual(
+            artifact.implementation["file_modules"],
+            {
+                "frontend/package.json": "frontend",
+                "frontend/src/components/order-list.tsx": "frontend",
+            },
+        )
+
+    def test_manifest_must_cover_every_generated_file(self):
+        payload = valid_payload()
+        payload["implementation"]["modules"].append("shell")
+        payload["implementation"]["file_modules"].pop(
+            "frontend/package.json"
+        )
+
+        with self.assertRaisesRegex(
+            FrontendGenerationValidationError,
+            "missing_paths",
         ):
             FrontendGenerationArtifact.from_json(json.dumps(payload))
 

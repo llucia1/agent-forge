@@ -29,6 +29,7 @@ class FrontendGenerationArtifact:
     infrastructure: dict[str, Any]
     technical_constraints: list[str]
     files: list[WorkspaceFile]
+    implementation: dict[str, Any]
     summary: str
 
     @classmethod
@@ -132,6 +133,11 @@ class FrontendGenerationArtifact:
                 "Frontend output contains duplicate file paths"
             )
 
+        implementation = _validate_implementation_manifest(
+            payload["implementation"],
+            set(paths),
+        )
+
         if status is FrontendGenerationStatus.COMPLETE:
             if missing_decisions:
                 raise FrontendGenerationValidationError(
@@ -141,10 +147,18 @@ class FrontendGenerationArtifact:
                 raise FrontendGenerationValidationError(
                     "A complete frontend output must contain files"
                 )
-        elif not missing_decisions or files:
+            if not implementation["modules"]:
+                raise FrontendGenerationValidationError(
+                    "A complete frontend output must implement modules"
+                )
+        elif (
+            not missing_decisions
+            or files
+            or any(implementation.values())
+        ):
             raise FrontendGenerationValidationError(
                 "A needs_input frontend output requires missing decisions "
-                "and cannot contain files"
+                "and cannot contain files or implementation coverage"
             )
 
         return cls(
@@ -156,6 +170,7 @@ class FrontendGenerationArtifact:
             infrastructure=payload["infrastructure"],
             technical_constraints=constraints,
             files=files,
+            implementation=implementation,
             summary=summary,
         )
 
@@ -216,6 +231,7 @@ class FrontendGenerationArtifact:
             "infrastructure",
             "technical_constraints",
             "files",
+            "implementation",
             "summary",
         )
 
@@ -256,12 +272,42 @@ class FrontendGenerationArtifact:
                         "properties": {
                             "path": {
                                 "type": "string",
-                                "pattern": "^frontend/",
+                                "pattern": "^frontend/.+$",
                             },
                             "content": {"type": "string"},
                         },
                         "additionalProperties": False,
                     },
+                },
+                "implementation": {
+                    "type": "object",
+                    "required": [
+                        "modules",
+                        "interfaces",
+                        "apis",
+                        "dependencies",
+                        "file_modules",
+                    ],
+                    "properties": {
+                        field_name: {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "uniqueItems": True,
+                        }
+                        for field_name in (
+                            "modules",
+                            "interfaces",
+                            "apis",
+                            "dependencies",
+                        )
+                    }
+                    | {
+                        "file_modules": {
+                            "type": "object",
+                            "additionalProperties": {"type": "string"},
+                        }
+                    },
+                    "additionalProperties": False,
                 },
                 "summary": {"type": "string"},
             },
@@ -284,6 +330,7 @@ class FrontendGenerationArtifact:
                 }
                 for workspace_file in self.files
             ],
+            "implementation": self.implementation,
             "summary": self.summary,
         }
 
@@ -299,3 +346,67 @@ class FrontendGenerationArtifact:
 
 def _reject_non_json_constant(value: str) -> None:
     raise ValueError(f"Non-JSON numeric constant: {value}")
+
+
+def _validate_implementation_manifest(
+    raw_implementation: Any,
+    file_paths: set[str],
+) -> dict[str, Any]:
+    coverage_fields = {"modules", "interfaces", "apis"}
+    required = {*coverage_fields, "dependencies", "file_modules"}
+    if not isinstance(raw_implementation, dict):
+        raise FrontendGenerationValidationError(
+            "Frontend field implementation must be an object"
+        )
+    if set(raw_implementation) != required:
+        raise FrontendGenerationValidationError(
+            "Frontend implementation must contain only: "
+            + ", ".join(sorted(required))
+        )
+
+    implementation: dict[str, Any] = {}
+    for field_name in (*sorted(coverage_fields), "dependencies"):
+        values = raw_implementation[field_name]
+        if not isinstance(values, list) or not all(
+            isinstance(value, str) and value.strip()
+            for value in values
+        ):
+            raise FrontendGenerationValidationError(
+                f"Frontend implementation {field_name} must be an array "
+                "of non-empty strings"
+            )
+        if len(set(values)) != len(values):
+            raise FrontendGenerationValidationError(
+                f"Frontend implementation {field_name} must not contain "
+                "duplicates"
+            )
+        implementation[field_name] = list(values)
+
+    file_modules = raw_implementation["file_modules"]
+    if not isinstance(file_modules, dict):
+        raise FrontendGenerationValidationError(
+            "Frontend implementation file_modules must be an object"
+        )
+    if not file_modules and len(implementation["modules"]) == 1:
+        module = implementation["modules"][0]
+        file_modules = {
+            path: module
+            for path in sorted(file_paths)
+        }
+    missing_paths = sorted(file_paths.difference(file_modules))
+    unknown_paths = sorted(set(file_modules).difference(file_paths))
+    invalid_modules = sorted(
+        path
+        for path, module in file_modules.items()
+        if not isinstance(module, str)
+        or module not in implementation["modules"]
+    )
+    if missing_paths or unknown_paths or invalid_modules:
+        raise FrontendGenerationValidationError(
+            "Frontend implementation file_modules must map every generated "
+            "file to an implemented module; "
+            f"missing_paths={missing_paths}, unknown_paths={unknown_paths}, "
+            f"invalid_modules={invalid_modules}"
+        )
+    implementation["file_modules"] = dict(file_modules)
+    return implementation
