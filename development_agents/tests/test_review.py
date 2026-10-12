@@ -66,23 +66,22 @@ class ReviewArtifactTests(unittest.TestCase):
         self.assertEqual(review.findings[0].scope, FindingScope.BACKEND)
         self.assertEqual(json.loads(review.to_json()), payload)
 
-    def test_approved_allows_only_non_blocking_findings(self):
+    def test_approved_forbids_all_findings(self):
         payload = valid_payload(
             status="approved",
             findings=[valid_finding(severity="medium")],
             summary="Approved with a non-blocking observation",
         )
 
-        review = ReviewArtifact.from_json(json.dumps(payload))
-
-        self.assertEqual(review.status, ReviewStatus.APPROVED)
-
-        payload["findings"][0]["severity"] = "critical"
         with self.assertRaisesRegex(
             ReviewValidationError,
-            "blocking findings",
+            "cannot contain findings",
         ):
             ReviewArtifact.from_json(json.dumps(payload))
+
+        payload["findings"] = []
+        review = ReviewArtifact.from_json(json.dumps(payload))
+        self.assertEqual(review.status, ReviewStatus.APPROVED)
 
     def test_changes_required_requires_at_least_one_finding(self):
         payload = valid_payload(findings=[])

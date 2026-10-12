@@ -258,16 +258,9 @@ class ReviewArtifact:
         )
 
         if status is ReviewStatus.APPROVED:
-            blocking_severities = {
-                FindingSeverity.CRITICAL,
-                FindingSeverity.HIGH,
-            }
-            if any(
-                finding.severity in blocking_severities
-                for finding in findings
-            ):
+            if findings:
                 raise ReviewValidationError(
-                    "An approved review cannot contain blocking findings"
+                    "An approved review cannot contain findings"
                 )
             if missing_decisions or not checked_rules:
                 raise ReviewValidationError(

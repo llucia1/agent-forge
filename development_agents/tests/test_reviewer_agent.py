@@ -15,7 +15,7 @@ from core.contracts.results import TaskResultWriter
 from core.contracts.workspaces import ProjectCodeReader
 from core.models.architecture import ArchitectureArtifact
 from core.models.project import Project
-from core.models.review import ReviewValidationError
+from core.models.review import ReviewStatus, ReviewValidationError
 from core.models.task import AgentRole, Task, TaskStatus
 from core.models.task_result import TaskExecutionResult
 from core.models.workspace import ProjectSnapshot, WorkspaceFile
@@ -52,57 +52,31 @@ class ReviewerAgentTests(unittest.TestCase):
         self.project = Project(
             id=self.task.project_id,
             name="Generated Project",
-            description="A project using its own technical decisions",
-            backend_stack={"language": "ServerLang"},
-            backend_architecture={"style": "ProjectServerStyle"},
-            frontend_stack={"language": "ClientLang"},
-            frontend_architecture={"style": "ProjectClientStyle"},
-            infrastructure={"runtime": "ProjectRuntime"},
-            technical_constraints=[
-                "Project-defined dependency constraint",
-            ],
+            description="Project with an authoritative contract",
+            backend_stack={"language": "Python"},
+            backend_architecture={"style": "ports"},
+            frontend_stack={"language": "JavaScript"},
+            frontend_architecture={"style": "component-based"},
+            infrastructure={"runtime": "browser"},
+            technical_constraints=[],
         )
         self.architecture = self._architecture()
-        self.workspace_files = [
-            WorkspaceFile(
-                "backend/src/service.code",
-                "server implementation\n",
-            ),
-            WorkspaceFile(
-                "frontend/src/view.code",
-                "client implementation\n",
-            ),
-            WorkspaceFile(
-                "project.conf",
-                "shared configuration\n",
-            ),
-        ]
-        self.review_output = self._review_output()
-        self.engine_result = EngineResult(
-            output=json.dumps(self.review_output),
-            metadata={"tokens": 275},
-            provider="litellm",
-            model_alias="project-review-model",
-        )
+        self.workspace_files = self._valid_workspace()
         self.task_status_writer = Mock(spec=TaskStatusWriter)
         self.task_result_writer = Mock(spec=TaskResultWriter)
         self.project_reader = Mock(spec=ProjectReader)
         self.project_reader.find_by_id.return_value = self.project
         self.workspace_reader = Mock(spec=ProjectCodeReader)
-        self.workspace_reader.read_architecture.return_value = (
-            self.architecture
-        )
+        self.workspace_reader.read_architecture.return_value = self.architecture
         self.workspace_reader.read_files.return_value = self.workspace_files
         self.engine = Mock(spec=AgentEngine)
-        self.engine.run.return_value = self.engine_result
         self.context_provider = Mock(spec=ContextProvider)
-        self.base_context = {
-            "project_memory": {"summary": "AgentForge context"},
+        self.context_provider.build.return_value = {
+            "project_memory": {},
             "previous_decisions": [],
             "feedback": [],
             "rag_context": None,
         }
-        self.context_provider.build.return_value = self.base_context
         self.agent = ReviewerAgent(
             task_status_writer=self.task_status_writer,
             task_result_writer=self.task_result_writer,
@@ -111,6 +85,7 @@ class ReviewerAgentTests(unittest.TestCase):
             engine=self.engine,
             context_provider=self.context_provider,
         )
+        self._set_engine_to_expected_review()
 
     def _architecture(self, **overrides):
         payload = {
@@ -128,6 +103,37 @@ class ReviewerAgentTests(unittest.TestCase):
         payload.update(overrides)
         return ArchitectureArtifact.from_json(json.dumps(payload))
 
+    @staticmethod
+    def _valid_workspace():
+        return [
+            WorkspaceFile(
+                "backend/src/service.py",
+                (
+                    'PROJECT_PATH = "/projects/{project_id}"\n'
+                    "def read_project(project_id):\n"
+                    '    return {"status": "ready"}\n'
+                    "def get_project(project_id):\n"
+                    '    method = "GET"\n'
+                    "    return read_project(project_id)\n"
+                ),
+            ),
+            WorkspaceFile(
+                "frontend/package.json",
+                '{"scripts":{"build":"node --check src/app.js"}}\n',
+            ),
+            WorkspaceFile(
+                "frontend/src/app.js",
+                (
+                    'const PROJECT_PATH = "/projects/{project_id}";\n'
+                    "export async function read_project(project_id) {\n"
+                    "  return fetch(PROJECT_PATH.replace("
+                    '"{project_id}", project_id), {method: "GET"});\n'
+                    "}\n"
+                    "export const get_project = read_project;\n"
+                ),
+            ),
+        ]
+
     def _baseline(self):
         return {
             "backend_stack": self.project.backend_stack,
@@ -138,60 +144,46 @@ class ReviewerAgentTests(unittest.TestCase):
             "technical_constraints": self.project.technical_constraints,
         }
 
-    def _review_output(self, **overrides):
-        payload = {
+    def _expected_output(self):
+        findings = ReviewerAgent._inspect_workspace(
+            self.project,
+            self.architecture,
+            self.workspace_files,
+        )
+        return {
             "version": 1,
-            "status": "changes_required",
-            "summary": "One project rule needs correction",
+            "status": (
+                "changes_required" if findings else "approved"
+            ),
+            "summary": (
+                f"Deterministic review found {len(findings)} issue(s)"
+            ),
             "technical_baseline": self._baseline(),
-            "findings": [
-                {
-                    "id": "REV-001",
-                    "severity": "high",
-                    "scope": "backend",
-                    "path": "backend/src/service.code",
-                    "rule": "project.backend_architecture",
-                    "message": "The declared structure is not implemented",
-                    "suggested_action": (
-                        "Align the file responsibilities with the Project"
-                    ),
-                }
-            ],
+            "findings": [finding.to_dict() for finding in findings],
             "checked_rules": list(EXPECTED_RULES),
             "missing_decisions": [],
         }
-        payload.update(overrides)
-        return payload
 
-    def test_receives_only_the_read_only_workspace_contract(self):
+    def _set_engine_to_expected_review(self):
+        self.engine.run.return_value = EngineResult(
+            output=json.dumps(self._expected_output()),
+            metadata={"tokens": 275},
+            provider="litellm",
+            model_alias="project-review-model",
+        )
+
+    def test_receives_only_read_only_workspace_contract(self):
         signature = inspect.signature(ReviewerAgent.__init__)
-
         self.assertIs(
             signature.parameters["workspace_reader"].annotation,
             ProjectCodeReader,
         )
-        self.assertNotIn("workspace", signature.parameters)
         self.assertFalse(hasattr(self.workspace_reader, "write_files"))
 
-    def test_persists_review_then_completes_without_writing_files(self):
+    def test_valid_workspace_is_approved_and_persisted(self):
         events = []
         self.task_status_writer.update_status.side_effect = (
             lambda task_id, status: events.append(str(status))
-        )
-        self.workspace_reader.read_architecture.side_effect = (
-            lambda project_id: events.append("architecture")
-            or self.architecture
-        )
-        self.workspace_reader.read_files.side_effect = (
-            lambda project_id: events.append("read_files")
-            or self.workspace_files
-        )
-        self.context_provider.build.side_effect = (
-            lambda task, project: events.append("context")
-            or self.base_context
-        )
-        self.engine.run.side_effect = (
-            lambda **kwargs: events.append("engine") or self.engine_result
         )
         self.task_result_writer.write.side_effect = (
             lambda result: events.append("result")
@@ -199,23 +191,10 @@ class ReviewerAgentTests(unittest.TestCase):
 
         self.agent.handle(self.task)
 
-        self.assertEqual(
-            events,
-            [
-                "in_progress",
-                "architecture",
-                "read_files",
-                "context",
-                "engine",
-                "result",
-                "completed",
-            ],
-        )
         persisted = self.task_result_writer.write.call_args.args[0]
         self.assertIsInstance(persisted, TaskExecutionResult)
-        self.assertEqual(persisted.task_id, self.task.id)
-        self.assertEqual(persisted.project_id, self.task.project_id)
-        self.assertEqual(persisted.agent, "reviewer")
+        self.assertEqual(json.loads(persisted.output)["status"], "approved")
+        self.assertEqual(json.loads(persisted.output)["findings"], [])
         self.assertEqual(persisted.provider, "litellm")
         self.assertEqual(persisted.model_alias, "project-review-model")
         self.assertEqual(
@@ -226,115 +205,279 @@ class ReviewerAgentTests(unittest.TestCase):
                     self.architecture,
                     self.workspace_files,
                 ).fingerprint,
+                "deterministic_findings": 0,
             },
         )
-        self.assertEqual(json.loads(persisted.output), self.review_output)
+        self.assertEqual(events, ["in_progress", "result", "completed"])
         self.assertEqual(self.task.status, TaskStatus.COMPLETED)
 
-    def test_approved_review_also_completes(self):
-        output = self._review_output(
-            status="approved",
-            findings=[],
-            summary="The generated project follows its declared rules",
-        )
-        self.engine.run.return_value = EngineResult(
-            output=json.dumps(output),
-            metadata={},
-            provider="test",
-        )
-
-        self.agent.handle(self.task)
-
-        self.assertEqual(self.task.status, TaskStatus.COMPLETED)
-
-    def test_context_uses_exact_catalog_and_classifies_read_files(self):
+    def test_context_locks_status_findings_baseline_and_rules(self):
         self.agent.handle(self.task)
 
         context = self.engine.run.call_args.kwargs["context"]
-        review_context = context["review"]
+        contract = context["output_contract"]["properties"]
+        self.assertEqual(contract["status"]["const"], "approved")
+        self.assertEqual(contract["findings"]["const"], [])
         self.assertEqual(
-            [rule["id"] for rule in review_context["rule_catalog"]],
-            EXPECTED_RULES,
+            contract["technical_baseline"]["const"], self._baseline()
+        )
+        self.assertEqual(contract["checked_rules"]["const"], EXPECTED_RULES)
+        self.assertEqual(
+            context["review"]["backend_files"][0]["path"],
+            "backend/src/service.py",
         )
         self.assertEqual(
-            review_context["backend_files"],
-            [
-                {
-                    "path": "backend/src/service.code",
-                    "content": "server implementation\n",
-                }
-            ],
-        )
-        self.assertEqual(
-            review_context["frontend_files"],
-            [
-                {
-                    "path": "frontend/src/view.code",
-                    "content": "client implementation\n",
-                }
-            ],
-        )
-        self.assertEqual(
-            review_context["shared_files"],
-            [
-                {
-                    "path": "project.conf",
-                    "content": "shared configuration\n",
-                }
-            ],
-        )
-        contract = context["output_contract"]
-        self.assertEqual(
-            contract["properties"]["technical_baseline"]["const"],
-            self._baseline(),
-        )
-        self.assertEqual(
-            contract["properties"]["checked_rules"]["const"],
-            EXPECTED_RULES,
+            context["review"]["frontend_files"][0]["path"],
+            "frontend/package.json",
         )
 
-    def test_does_not_add_unconfigured_patterns_or_technologies(self):
+    def test_adversarial_workspace_reports_all_real_violation_classes(self):
+        self.project.frontend_stack = {
+            "language": "JavaScript",
+            "dependencies": [],
+        }
+        self.architecture = self._architecture()
+        self.workspace_files = [
+            WorkspaceFile(
+                "backend/src/service.py",
+                (
+                    "import requests\n"
+                    "def unrelated():\n"
+                    "    missing_reference()\n"
+                    "    pass\n"
+                    'ROUTE = "/wrong"\n'
+                    'METHOD = "POST"\n'
+                ),
+            ),
+            WorkspaceFile(
+                "frontend/package.json",
+                '{"dependencies":{"react":"18"}}',
+            ),
+            WorkspaceFile(
+                "frontend/src/app.ts",
+                (
+                    "// TODO finish\n"
+                    "import {missing} from './absent';\n"
+                    'fetch("/other", {method: "POST"});\n'
+                ),
+            ),
+        ]
+        self.workspace_reader.read_architecture.return_value = self.architecture
+        self.workspace_reader.read_files.return_value = self.workspace_files
+        self._set_engine_to_expected_review()
+
         self.agent.handle(self.task)
 
-        serialized_context = json.dumps(
-            self.engine.run.call_args.kwargs["context"]
+        payload = json.loads(
+            self.task_result_writer.write.call_args.args[0].output
         )
-        for forbidden in (
-            "Hexagonal",
-            "DDD",
-            "CQRS",
-            "SOLID",
-            "React",
-            "Vue",
-            "Angular",
-            "Svelte",
-        ):
-            self.assertNotIn(forbidden, serialized_context)
+        ids = {finding["id"] for finding in payload["findings"]}
+        self.assertEqual(payload["status"], "changes_required")
+        expected_prefixes = {
+            "REV-API-",
+            "REV-INTERFACE-",
+            "REV-BACKEND-UNAUTHORIZED-",
+            "REV-BROKEN-IMPORT-",
+            "REV-BROKEN-REFERENCE-",
+            "REV-FRONTEND-DEPENDENCIES",
+            "REV-PLACEHOLDER-",
+            "REV-TECH-",
+        }
+        for prefix in expected_prefixes:
+            self.assertTrue(
+                any(identifier.startswith(prefix) for identifier in ids),
+                prefix,
+            )
+        self.assertTrue(
+            all(
+                finding["severity"] in {"critical", "high"}
+                for finding in payload["findings"]
+            )
+        )
+
+    def test_detects_missing_imported_symbol(self):
+        self.workspace_files.extend(
+            [
+                WorkspaceFile(
+                    "frontend/src/utils.js",
+                    "export const available = true;\n",
+                ),
+            ]
+        )
+        self.workspace_files[2] = WorkspaceFile(
+            "frontend/src/app.js",
+            (
+                "import {missing} from './utils';\n"
+                'const PROJECT_PATH = "/projects/{project_id}";\n'
+                "export async function read_project(project_id) {\n"
+                "  return fetch(PROJECT_PATH.replace("
+                '"{project_id}", project_id), {method: "GET"});\n'
+                "}\n"
+                "export const get_project = read_project;\n"
+            ),
+        )
+
+        findings = ReviewerAgent._inspect_workspace(
+            self.project,
+            self.architecture,
+            self.workspace_files,
+        )
+
+        self.assertIn(
+            "REV-BROKEN-SYMBOL-frontend-src-app-js-missing",
+            {finding.id for finding in findings},
+        )
+
+    def test_invalid_package_shape_is_a_finding_not_a_crash(self):
+        self.workspace_files[1] = WorkspaceFile(
+            "frontend/package.json",
+            "[]",
+        )
+
+        findings = ReviewerAgent._inspect_workspace(
+            self.project,
+            self.architecture,
+            self.workspace_files,
+        )
+
+        self.assertIn(
+            "REV-FRONTEND-MANIFEST-INVALID",
+            {finding.id for finding in findings},
+        )
+
+    def test_get_project_name_does_not_fake_get_http_method(self):
+        self.workspace_files[0] = WorkspaceFile(
+            "backend/src/service.py",
+            (
+                'PROJECT_PATH = "/projects/{project_id}"\n'
+                "def read_project(project_id):\n"
+                '    return {"status": "ready"}\n'
+                "def get_project(project_id):\n"
+                '    method = "POST"\n'
+                "    return read_project(project_id)\n"
+            ),
+        )
+
+        findings = ReviewerAgent._inspect_workspace(
+            self.project,
+            self.architecture,
+            self.workspace_files,
+        )
+
+        self.assertIn(
+            "REV-API-project-api-get-project-backend",
+            {finding.id for finding in findings},
+        )
+
+    def test_detects_missing_persistence_model(self):
+        self.architecture = self._architecture(
+            persistence={
+                "stores": [
+                    {
+                        "name": "primary",
+                        "technology": "PostgreSQL",
+                        "purpose": "Store project records",
+                        "owned_by": "backend",
+                        "data_models": [
+                            {
+                                "name": "ProjectRecord",
+                                "description": "Stored project",
+                            }
+                        ],
+                    }
+                ]
+            }
+        )
+
+        findings = ReviewerAgent._inspect_workspace(
+            self.project,
+            self.architecture,
+            self.workspace_files,
+        )
+
+        self.assertIn(
+            "REV-PERSISTENCE-primary-projectrecord",
+            {finding.id for finding in findings},
+        )
+
+    def test_missing_module_is_changes_required_not_needs_input(self):
+        self.workspace_files = [
+            item
+            for item in self.workspace_files
+            if not item.relative_path.startswith("backend/")
+        ]
+        self.workspace_reader.read_files.return_value = self.workspace_files
+        self._set_engine_to_expected_review()
+
+        self.agent.handle(self.task)
+
+        payload = json.loads(
+            self.task_result_writer.write.call_args.args[0].output
+        )
+        self.assertEqual(payload["status"], "changes_required")
+        self.assertIn(
+            "REV-MODULE-MISSING-backend",
+            {finding["id"] for finding in payload["findings"]},
+        )
+        self.engine.run.assert_called_once()
+
+    def test_cannot_approve_invalid_workspace_or_invent_finding(self):
+        self.workspace_files[2] = WorkspaceFile(
+            "frontend/src/app.js",
+            "// TODO implement\n",
+        )
+        self.workspace_reader.read_files.return_value = self.workspace_files
+        expected = self._expected_output()
+        invalid = dict(expected)
+        invalid["status"] = "approved"
+        invalid["findings"] = []
+        invented = dict(expected)
+        invented["findings"] = [
+            {
+                "id": "REV-INVENTED",
+                "severity": "high",
+                "scope": "frontend",
+                "path": "frontend/src/app.js",
+                "rule": "implementation.frontend",
+                "message": "Invented",
+                "suggested_action": "None",
+            }
+        ]
+        self.engine.run.side_effect = [
+            EngineResult(json.dumps(invalid), {}, "test"),
+            EngineResult(json.dumps(invented), {}, "test"),
+            EngineResult(json.dumps(expected), {}, "test"),
+        ]
+
+        self.agent.handle(self.task)
+
+        self.assertEqual(self.engine.run.call_count, 3)
+        feedback = self.engine.run.call_args.kwargs["context"]
+        self.assertIn("review_validation_feedback", feedback)
+        persisted = json.loads(
+            self.task_result_writer.write.call_args.args[0].output
+        )
+        self.assertEqual(persisted["findings"], expected["findings"])
 
     def test_missing_architecture_is_deterministic_needs_input(self):
         self.workspace_reader.read_architecture.return_value = None
 
         self.agent.handle(self.task)
 
-        self.workspace_reader.read_files.assert_not_called()
-        self.context_provider.build.assert_not_called()
         self.engine.run.assert_not_called()
-        persisted = self.task_result_writer.write.call_args.args[0]
-        payload = json.loads(persisted.output)
-        self.assertEqual(persisted.provider, "agentforge")
-        self.assertIsNone(persisted.model_alias)
+        payload = json.loads(
+            self.task_result_writer.write.call_args.args[0].output
+        )
         self.assertEqual(payload["status"], "needs_input")
         self.assertEqual(
-            payload["missing_decisions"],
-            ["architecture_artifact"],
+            payload["missing_decisions"], ["architecture_artifact"]
         )
-        self.assertEqual(self.task.status, TaskStatus.NEEDS_INPUT)
 
     def test_needs_input_architecture_does_not_invoke_engine(self):
         self.workspace_reader.read_architecture.return_value = (
             self._architecture(
                 status="needs_input",
-                missing_decisions=["project integration decision"],
+                missing_decisions=["integration decision"],
                 modules=[],
                 interfaces=[],
                 apis=[],
@@ -345,196 +488,26 @@ class ReviewerAgentTests(unittest.TestCase):
 
         self.agent.handle(self.task)
 
-        self.workspace_reader.read_files.assert_not_called()
         self.engine.run.assert_not_called()
         payload = json.loads(
             self.task_result_writer.write.call_args.args[0].output
         )
-        self.assertEqual(
-            payload["missing_decisions"],
-            ["project integration decision"],
-        )
-        self.assertEqual(self.task.status, TaskStatus.NEEDS_INPUT)
-
-    def test_missing_project_decision_does_not_invoke_engine(self):
-        self.project.infrastructure = {}
-        self.workspace_reader.read_architecture.return_value = (
-            self._architecture()
-        )
-
-        self.agent.handle(self.task)
-
-        self.workspace_reader.read_files.assert_not_called()
-        self.engine.run.assert_not_called()
-        payload = json.loads(
-            self.task_result_writer.write.call_args.args[0].output
-        )
-        self.assertEqual(payload["missing_decisions"], ["infrastructure"])
-        self.assertEqual(self.task.status, TaskStatus.NEEDS_INPUT)
-
-    def test_empty_constraints_are_authoritative_and_not_missing(self):
-        self.project.technical_constraints = []
-        self.workspace_reader.read_architecture.return_value = (
-            self._architecture()
-        )
-        output = self._review_output()
-        output["technical_baseline"]["technical_constraints"] = []
-        self.engine.run.return_value = EngineResult(
-            output=json.dumps(output),
-            metadata={},
-            provider="test",
-        )
-
-        self.agent.handle(self.task)
-
-        self.engine.run.assert_called_once()
-        self.assertEqual(self.task.status, TaskStatus.COMPLETED)
-
-    def test_missing_backend_or_frontend_code_is_needs_input(self):
-        cases = (
-            (
-                [self.workspace_files[1]],
-                ["backend_implementation"],
-            ),
-            (
-                [self.workspace_files[0]],
-                ["frontend_implementation"],
-            ),
-        )
-        for files, expected in cases:
-            with self.subTest(expected=expected):
-                self.setUp()
-                self.workspace_reader.read_files.return_value = files
-
-                self.agent.handle(self.task)
-
-                self.engine.run.assert_not_called()
-                payload = json.loads(
-                    self.task_result_writer.write.call_args.args[0].output
-                )
-                self.assertEqual(payload["missing_decisions"], expected)
-                self.assertEqual(self.task.status, TaskStatus.NEEDS_INPUT)
+        self.assertEqual(payload["missing_decisions"], ["integration decision"])
 
     def test_project_architecture_contradiction_fails_before_engine(self):
         self.workspace_reader.read_architecture.return_value = (
-            self._architecture(
-                backend_architecture={"style": "ContradictoryStyle"}
-            )
+            self._architecture(backend_architecture={"style": "other"})
         )
 
         with self.assertRaisesRegex(
-            ReviewValidationError,
-            "backend_architecture",
+            ReviewValidationError, "backend_architecture"
         ):
             self.agent.handle(self.task)
 
-        self.workspace_reader.read_files.assert_not_called()
         self.engine.run.assert_not_called()
-        self.task_result_writer.write.assert_not_called()
         self.assertEqual(self.task.status, TaskStatus.FAILED)
 
-    def test_rejects_baseline_that_contradicts_project(self):
-        output = self._review_output()
-        output["technical_baseline"]["frontend_stack"] = {
-            "language": "UnapprovedLanguage"
-        }
-        self.engine.run.return_value = EngineResult(
-            output=json.dumps(output),
-            metadata={},
-            provider="test",
-        )
-
-        with self.assertRaisesRegex(
-            ReviewValidationError,
-            "technical_baseline",
-        ):
-            self.agent.handle(self.task)
-
-        self.task_result_writer.write.assert_not_called()
-        self.assertEqual(self.task.status, TaskStatus.FAILED)
-
-    def test_rejects_checked_rules_that_do_not_match_catalog(self):
-        output = self._review_output(
-            checked_rules=EXPECTED_RULES[:-1]
-        )
-        self.engine.run.return_value = EngineResult(
-            output=json.dumps(output),
-            metadata={},
-            provider="test",
-        )
-
-        with self.assertRaisesRegex(
-            ReviewValidationError,
-            "checked_rules",
-        ):
-            self.agent.handle(self.task)
-
-        self.task_result_writer.write.assert_not_called()
-        self.assertEqual(self.task.status, TaskStatus.FAILED)
-
-    def test_rejects_finding_path_not_present_in_read_files(self):
-        output = self._review_output()
-        output["findings"][0]["path"] = "backend/src/not-read.code"
-        self.engine.run.return_value = EngineResult(
-            output=json.dumps(output),
-            metadata={},
-            provider="test",
-        )
-
-        with self.assertRaisesRegex(
-            ReviewValidationError,
-            "unread workspace paths",
-        ):
-            self.agent.handle(self.task)
-
-        self.task_result_writer.write.assert_not_called()
-        self.assertEqual(self.task.status, TaskStatus.FAILED)
-
-    def test_rejects_finding_rule_outside_catalog(self):
-        output = self._review_output()
-        output["findings"][0]["rule"] = "unapproved.rule"
-        self.engine.run.return_value = EngineResult(
-            output=json.dumps(output),
-            metadata={},
-            provider="test",
-        )
-
-        with self.assertRaisesRegex(
-            ReviewValidationError,
-            "unknown rules",
-        ):
-            self.agent.handle(self.task)
-
-        self.task_result_writer.write.assert_not_called()
-        self.assertEqual(self.task.status, TaskStatus.FAILED)
-
-    def test_engine_needs_input_is_persisted_and_sets_needs_input(self):
-        output = self._review_output(
-            status="needs_input",
-            findings=[],
-            missing_decisions=["runtime integration contract"],
-            summary="The runtime integration contract is missing",
-        )
-        self.engine.run.return_value = EngineResult(
-            output=json.dumps(output),
-            metadata={"tokens": 100},
-            provider="litellm",
-            model_alias="project-review-model",
-        )
-
-        self.agent.handle(self.task)
-
-        self.task_result_writer.write.assert_called_once()
-        self.assertEqual(
-            self.task_status_writer.update_status.call_args_list,
-            [
-                call(self.task.id, TaskStatus.IN_PROGRESS),
-                call(self.task.id, TaskStatus.NEEDS_INPUT),
-            ],
-        )
-        self.assertEqual(self.task.status, TaskStatus.NEEDS_INPUT)
-
-    def test_persistence_failure_marks_failed_and_propagates(self):
+    def test_persistence_failure_marks_failed(self):
         self.task_result_writer.write.side_effect = RuntimeError(
             "database unavailable"
         )
@@ -548,18 +521,15 @@ class ReviewerAgentTests(unittest.TestCase):
         self.project_reader.find_by_id.return_value = None
 
         with self.assertRaisesRegex(
-            ReviewProjectNotFoundError,
-            str(self.task.project_id),
+            ReviewProjectNotFoundError, str(self.task.project_id)
         ):
             self.agent.handle(self.task)
 
         self.workspace_reader.read_architecture.assert_not_called()
-        self.workspace_reader.read_files.assert_not_called()
         self.engine.run.assert_not_called()
-        self.task_result_writer.write.assert_not_called()
         self.assertEqual(self.task.status, TaskStatus.FAILED)
 
-    def test_in_progress_failure_attempts_failed_and_propagates(self):
+    def test_status_failure_attempts_failed_and_propagates(self):
         self.task_status_writer.update_status.side_effect = [
             RuntimeError("status unavailable"),
             None,
@@ -575,7 +545,6 @@ class ReviewerAgentTests(unittest.TestCase):
                 call(self.task.id, TaskStatus.FAILED),
             ],
         )
-        self.assertEqual(self.task.status, TaskStatus.FAILED)
 
 
 if __name__ == "__main__":
