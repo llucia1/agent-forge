@@ -1,3 +1,4 @@
+import hashlib
 import json
 import unittest
 from unittest.mock import Mock, call
@@ -229,7 +230,8 @@ class QAAgentTests(unittest.TestCase):
             output_truncated=False,
             failure_reason=None,
             evidence_hashes={
-                "backend/project.conf": "sha256:" + "1" * 64,
+                "backend/project.conf": "sha256:"
+                + hashlib.sha256(b"check = true\n").hexdigest(),
             },
         )
         self.executor.execute.return_value = QAExecutionResult((check_result,))
@@ -244,6 +246,124 @@ class QAAgentTests(unittest.TestCase):
         )
         self.assertEqual(self._persisted_payload()["status"], "passed")
         self.assertEqual(self.task.status, TaskStatus.COMPLETED)
+
+    def test_untrusted_executor_evidence_is_blocked_not_passed(self):
+        check = QACheck(
+            id="project-check",
+            command=QACommand("quality-tool", ("verify",), "backend"),
+            evidence_paths=("backend/project.conf",),
+            timeout_seconds=10,
+        )
+        policy = QAExecutionPolicy(
+            (ExecutableRule("quality-tool", (("verify",),), ("backend",), 20),),
+            1024,
+        )
+        self.agent = QAAgent(
+            self.status_writer,
+            self.result_writer,
+            self.execution_reader,
+            self.project_reader,
+            self.workspace_reader,
+            self.executor,
+            policy,
+            (check,),
+        )
+        self.executor.execute.return_value = QAExecutionResult(
+            (
+                QACheckResult(
+                    id=check.id,
+                    status=QACheckStatus.PASSED,
+                    exit_code=0,
+                    duration_ms=1,
+                    stdout_excerpt="ok",
+                    stderr_excerpt="",
+                    output_truncated=False,
+                    failure_reason=None,
+                    evidence_hashes={
+                        "backend/project.conf": "sha256:" + "0" * 64
+                    },
+                ),
+            )
+        )
+
+        self.agent.handle(self.task)
+
+        payload = self._persisted_payload()
+        self.assertEqual(payload["status"], "blocked")
+        self.assertEqual(
+            payload["checks"][0]["failure_reason"],
+            "untrusted_execution_result",
+        )
+
+    def test_real_check_failure_produces_failed(self):
+        check = QACheck(
+            id="project-check",
+            command=QACommand("quality-tool", ("verify",), "backend"),
+            evidence_paths=("backend/project.conf",),
+            timeout_seconds=10,
+        )
+        policy = QAExecutionPolicy(
+            (ExecutableRule("quality-tool", (("verify",),), ("backend",), 20),),
+            1024,
+        )
+        self.agent = QAAgent(
+            self.status_writer,
+            self.result_writer,
+            self.execution_reader,
+            self.project_reader,
+            self.workspace_reader,
+            self.executor,
+            policy,
+            (check,),
+        )
+        evidence_hash = "sha256:" + hashlib.sha256(
+            b"check = true\n"
+        ).hexdigest()
+        self.executor.execute.return_value = QAExecutionResult(
+            (
+                QACheckResult(
+                    id=check.id,
+                    status=QACheckStatus.FAILED,
+                    exit_code=1,
+                    duration_ms=2,
+                    stdout_excerpt="",
+                    stderr_excerpt="invalid configuration",
+                    output_truncated=False,
+                    failure_reason="nonzero_exit",
+                    evidence_hashes={"backend/project.conf": evidence_hash},
+                ),
+            )
+        )
+
+        self.agent.handle(self.task)
+
+        self.assertEqual(self._persisted_payload()["status"], "failed")
+        self.assertEqual(self.task.status, TaskStatus.COMPLETED)
+
+    def test_check_outside_policy_needs_input_without_execution(self):
+        check = QACheck(
+            id="project-check",
+            command=QACommand("unapproved-tool", ("verify",), "backend"),
+            evidence_paths=("backend/project.conf",),
+            timeout_seconds=10,
+        )
+        self.agent = QAAgent(
+            self.status_writer,
+            self.result_writer,
+            self.execution_reader,
+            self.project_reader,
+            self.workspace_reader,
+            self.executor,
+            QAExecutionPolicy((), 1024),
+            (check,),
+        )
+
+        self.agent.handle(self.task)
+
+        self.executor.execute.assert_not_called()
+        payload = self._persisted_payload()
+        self.assertEqual(payload["status"], "needs_input")
+        self.assertEqual(payload["missing_decisions"], ["authorized_qa_checks"])
 
     def test_changed_workspace_is_not_executed_after_review(self):
         self.latest_review.result.metadata["workspace_fingerprint"] = (

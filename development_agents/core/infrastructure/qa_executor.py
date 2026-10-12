@@ -22,6 +22,14 @@ class QAExecutorError(RuntimeError):
     """Raised when the isolated QA executor cannot operate safely."""
 
 
+SANDBOX_FAILURE_PREFIXES = (
+    "bwrap: No permissions",
+    "bwrap: Failed",
+    "bwrap: Can't",
+    "bwrap: execvp",
+)
+
+
 class IsolatedProjectQAExecutor(ProjectQAExecutor):
     def __init__(
         self,
@@ -247,6 +255,14 @@ class IsolatedProjectQAExecutor(ProjectQAExecutor):
         duration_ms = int((time.monotonic() - started) * 1000)
         stdout, stdout_truncated = self._bounded(completed.stdout)
         stderr, stderr_truncated = self._bounded(completed.stderr)
+        if completed.returncode != 0 and stderr.lstrip().startswith(
+            SANDBOX_FAILURE_PREFIXES
+        ):
+            return self._not_run(
+                check,
+                evidence_hashes,
+                "isolated_executor_unavailable",
+            )
         passed = completed.returncode == 0
         return QACheckResult(
             id=check.id,
@@ -276,7 +292,14 @@ class IsolatedProjectQAExecutor(ProjectQAExecutor):
             "--unshare-all",
             "--clearenv",
         ]
-        for system_path in ("/usr", "/bin", "/lib", "/lib64"):
+        for system_path in (
+            "/usr",
+            "/usr/local",
+            "/bin",
+            "/lib",
+            "/lib64",
+            "/etc",
+        ):
             if Path(system_path).exists():
                 command.extend(["--ro-bind", system_path, system_path])
         command.extend(

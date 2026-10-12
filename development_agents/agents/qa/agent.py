@@ -20,10 +20,16 @@ from core.models.qa import (
     QAStatus,
     QAValidationError,
     ReviewGate,
+    validate_authorized_check,
 )
-from core.models.review import ReviewArtifact, ReviewStatus, TechnicalBaseline
+from core.models.review import (
+    ReviewArtifact,
+    ReviewStatus,
+    ReviewValidationError,
+    TechnicalBaseline,
+)
 from core.models.task import AgentRole, Task, TaskStatus
-from core.models.task_result import TaskExecutionResult
+from core.models.task_result import AgentTaskExecution, TaskExecutionResult
 from core.models.workspace import ProjectSnapshot
 
 
@@ -83,7 +89,17 @@ class QAAgent(TaskHandler):
                     ("architecture_artifact",),
                 )
                 return
-            self._validate_architecture(project, architecture)
+            try:
+                self._validate_architecture(project, architecture)
+            except QAValidationError:
+                self._persist_needs_input(
+                    task,
+                    project,
+                    None,
+                    None,
+                    ("project_architecture_consistency",),
+                )
+                return
             if architecture.status is ArchitectureStatus.NEEDS_INPUT:
                 self._persist_needs_input(
                     task,
@@ -102,6 +118,10 @@ class QAAgent(TaskHandler):
                 latest_review is None
                 or latest_review.task_status is not TaskStatus.COMPLETED
                 or latest_review.result is None
+                or not self._is_consistent_review_execution(
+                    task,
+                    latest_review,
+                )
             ):
                 self._persist_needs_input(
                     task,
@@ -112,16 +132,33 @@ class QAAgent(TaskHandler):
                 )
                 return
 
-            review = ReviewArtifact.from_json(latest_review.result.output)
+            try:
+                review = ReviewArtifact.from_json(
+                    latest_review.result.output
+                )
+            except ReviewValidationError:
+                self._persist_needs_input(
+                    task,
+                    project,
+                    None,
+                    None,
+                    ("valid_reviewer_result",),
+                )
+                return
             gate = ReviewGate(
                 task_id=latest_review.task_id,
                 result_id=latest_review.result.id,
                 status=review.status,
             )
             if review.technical_baseline != self._baseline(project):
-                raise QAValidationError(
-                    "Reviewer baseline contradicts current Project"
+                self._persist_needs_input(
+                    task,
+                    project,
+                    gate,
+                    None,
+                    ("reviewer_project_consistency",),
                 )
+                return
             if review.status is ReviewStatus.CHANGES_REQUIRED:
                 self._persist_artifact(
                     task,
@@ -171,16 +208,54 @@ class QAAgent(TaskHandler):
                 )
                 return
 
+            check_ids = [check.id for check in self.authorized_checks]
+            if len(set(check_ids)) != len(check_ids):
+                self._persist_needs_input(
+                    task,
+                    project,
+                    gate,
+                    snapshot.fingerprint,
+                    ("authorized_qa_checks",),
+                )
+                return
+            try:
+                expected_evidence = {
+                    check.id: validate_authorized_check(
+                        check,
+                        snapshot,
+                        self.execution_policy,
+                    )
+                    for check in self.authorized_checks
+                }
+            except QAValidationError:
+                self._persist_needs_input(
+                    task,
+                    project,
+                    gate,
+                    snapshot.fingerprint,
+                    ("authorized_qa_checks",),
+                )
+                return
+
             execution = self.executor.execute(
                 snapshot,
                 self.authorized_checks,
                 reviewed_fingerprint,
             )
+            if not self._execution_is_trustworthy(
+                execution.checks,
+                expected_evidence,
+            ):
+                execution_checks = self._untrusted_execution_checks(
+                    expected_evidence
+                )
+            else:
+                execution_checks = execution.checks
             artifact = self._execution_artifact(
                 project,
                 gate,
                 snapshot.fingerprint,
-                execution.checks,
+                execution_checks,
             )
             self._persist_artifact(task, artifact)
             self._update_status(task, TaskStatus.COMPLETED)
@@ -280,6 +355,58 @@ class QAAgent(TaskHandler):
             workspace_fingerprint=fingerprint,
             checks=tuple(checks),
             missing_decisions=(),
+        )
+
+    @staticmethod
+    def _is_consistent_review_execution(
+        task: Task,
+        execution: AgentTaskExecution,
+    ) -> bool:
+        result = execution.result
+        return (
+            execution.project_id == task.project_id
+            and execution.agent is AgentRole.REVIEWER
+            and result is not None
+            and result.task_id == execution.task_id
+            and result.project_id == task.project_id
+            and result.agent == str(AgentRole.REVIEWER)
+        )
+
+    def _execution_is_trustworthy(
+        self,
+        checks: tuple[QACheckResult, ...],
+        expected_evidence: dict[str, dict[str, str]],
+    ) -> bool:
+        if not isinstance(checks, tuple):
+            return False
+        expected_ids = tuple(check.id for check in self.authorized_checks)
+        if tuple(
+            check.id if isinstance(check, QACheckResult) else None
+            for check in checks
+        ) != expected_ids:
+            return False
+        return all(
+            check.evidence_hashes == expected_evidence[check.id]
+            for check in checks
+        )
+
+    def _untrusted_execution_checks(
+        self,
+        expected_evidence: dict[str, dict[str, str]],
+    ) -> tuple[QACheckResult, ...]:
+        return tuple(
+            QACheckResult(
+                id=check.id,
+                status=QACheckStatus.NOT_RUN,
+                exit_code=None,
+                duration_ms=0,
+                stdout_excerpt="",
+                stderr_excerpt="",
+                output_truncated=False,
+                failure_reason="untrusted_execution_result",
+                evidence_hashes=expected_evidence[check.id],
+            )
+            for check in self.authorized_checks
         )
 
     @staticmethod

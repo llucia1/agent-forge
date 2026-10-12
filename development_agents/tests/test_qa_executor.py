@@ -124,6 +124,35 @@ class IsolatedProjectQAExecutorTests(unittest.TestCase):
                 "original\n",
             )
 
+    @patch("core.infrastructure.qa_executor.shutil.which")
+    def test_sandbox_startup_failure_is_blocked_not_a_project_failure(
+        self,
+        which,
+    ):
+        which.side_effect = lambda executable: {
+            "bwrap": "/usr/bin/bwrap",
+            "quality-tool": "/usr/bin/quality-tool",
+        }.get(executable)
+        process_run = Mock(
+            return_value=subprocess.CompletedProcess(
+                [],
+                1,
+                b"",
+                b"bwrap: No permissions to create a new namespace\n",
+            )
+        )
+
+        result = IsolatedProjectQAExecutor(
+            self.policy,
+            process_run=process_run,
+        ).execute(self.snapshot, (self.check,), self.snapshot.fingerprint)
+
+        self.assertEqual(result.checks[0].status, QACheckStatus.NOT_RUN)
+        self.assertEqual(
+            result.checks[0].failure_reason,
+            "isolated_executor_unavailable",
+        )
+
     def test_revalidates_fingerprint_before_materializing(self):
         executor = IsolatedProjectQAExecutor(self.policy)
 

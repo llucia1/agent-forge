@@ -246,6 +246,41 @@ class QACheckResult:
             for path, digest in self.evidence_hashes.items()
         ):
             raise QAValidationError("QA evidence hashes are invalid")
+        if self.status is QACheckStatus.PASSED and (
+            self.exit_code != 0 or self.failure_reason is not None
+        ):
+            raise QAValidationError(
+                "A passed QA check requires exit code 0 and no failure reason"
+            )
+        if self.status is QACheckStatus.FAILED and (
+            self.exit_code == 0
+            or not isinstance(self.failure_reason, str)
+            or not self.failure_reason.strip()
+        ):
+            raise QAValidationError(
+                "A failed QA check requires a failure reason and nonzero or "
+                "missing exit code"
+            )
+        if self.status is QACheckStatus.ERROR and (
+            self.exit_code is not None
+            or not isinstance(self.failure_reason, str)
+            or not self.failure_reason.strip()
+        ):
+            raise QAValidationError(
+                "An errored QA check requires no exit code and a failure reason"
+            )
+        if self.status is QACheckStatus.NOT_RUN and (
+            self.exit_code is not None
+            or self.duration_ms != 0
+            or self.stdout_excerpt
+            or self.stderr_excerpt
+            or not isinstance(self.failure_reason, str)
+            or not self.failure_reason.strip()
+        ):
+            raise QAValidationError(
+                "A non-executed QA check requires empty execution evidence "
+                "and a failure reason"
+            )
 
     @classmethod
     def from_dict(cls, payload: Any, index: int) -> "QACheckResult":

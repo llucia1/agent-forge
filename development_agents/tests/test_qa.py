@@ -96,6 +96,20 @@ class QAPlanTests(unittest.TestCase):
 
 
 class QAArtifactTests(unittest.TestCase):
+    def test_passed_check_rejects_false_success_exit_code(self):
+        with self.assertRaisesRegex(QAValidationError, "exit code 0"):
+            QACheckResult(
+                id="check",
+                status=QACheckStatus.PASSED,
+                exit_code=1,
+                duration_ms=1,
+                stdout_excerpt="",
+                stderr_excerpt="",
+                output_truncated=False,
+                failure_reason=None,
+                evidence_hashes={},
+            )
+
     def test_round_trips_structured_execution_evidence(self):
         artifact = QAArtifact(
             version=1,
