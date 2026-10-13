@@ -19,6 +19,12 @@ class ProjectWorkspaceInitializer(ABC):
         """Create or resolve the workspace owned by one project."""
 
 
+class ProjectWorkspaceRemover(ABC):
+    @abstractmethod
+    def remove(self, project_id: UUID) -> None:
+        """Remove a project workspace during creation compensation."""
+
+
 class ArchitectureArtifactWriter(ABC):
     @abstractmethod
     def write(

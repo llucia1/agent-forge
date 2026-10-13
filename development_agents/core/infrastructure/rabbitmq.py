@@ -74,17 +74,41 @@ class RabbitMQTaskPublisher(TaskPublisher):
         try:
             channel = connection.channel()
             channel.queue_declare(queue=queue, durable=True)
-            channel.basic_publish(
+            channel.confirm_delivery()
+            confirmed = channel.basic_publish(
                 exchange="",
                 routing_key=queue,
                 body=message,
+                mandatory=True,
                 properties=pika.BasicProperties(
                     content_type="application/json",
                     delivery_mode=2,
+                    message_id=str(task.id),
+                    type="agentforge.task.v1",
                 ),
             )
-        finally:
+            if confirmed is False:
+                raise RuntimeError(
+                    f"RabbitMQ did not confirm task publication: {task.id}"
+                )
+        except Exception:
+            try:
+                connection.close()
+            except Exception:
+                LOGGER.exception(
+                    "RabbitMQ connection could not close after failed "
+                    "publication task_id=%s",
+                    task.id,
+                )
+            raise
+        try:
             connection.close()
+        except Exception:
+            LOGGER.exception(
+                "RabbitMQ connection could not close after confirmed "
+                "publication task_id=%s",
+                task.id,
+            )
 
 
 class RabbitMQTaskConsumer(TaskConsumer):

@@ -67,10 +67,12 @@ class TaskPublisherTests(unittest.TestCase):
                     queue=queue,
                     durable=True,
                 )
+                channel.confirm_delivery.assert_called_once_with()
                 channel.basic_publish.assert_called_once()
                 publish_arguments = channel.basic_publish.call_args.kwargs
                 self.assertEqual(publish_arguments["exchange"], "")
                 self.assertEqual(publish_arguments["routing_key"], queue)
+                self.assertTrue(publish_arguments["mandatory"])
                 self.assertEqual(
                     publish_arguments["properties"].content_type,
                     "application/json",
@@ -78,6 +80,10 @@ class TaskPublisherTests(unittest.TestCase):
                 self.assertEqual(
                     publish_arguments["properties"].delivery_mode,
                     2,
+                )
+                self.assertEqual(
+                    publish_arguments["properties"].message_id,
+                    str(self.task_id),
                 )
                 self.assertEqual(
                     json.loads(publish_arguments["body"]),
@@ -134,6 +140,48 @@ class TaskPublisherTests(unittest.TestCase):
             RabbitMQTaskPublisher(rabbitmq_settings()).publish(task)
 
         connection.close.assert_called_once_with()
+
+    @patch("core.infrastructure.rabbitmq.pika.BlockingConnection")
+    def test_rejects_unconfirmed_publication(self, connection_factory):
+        connection = connection_factory.return_value
+        connection.channel.return_value.basic_publish.return_value = False
+        task = Task(
+            id=self.task_id,
+            project_id=self.project_id,
+            title="Implement feature",
+            description="Publish the task",
+            agent=AgentRole.BACKEND,
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "did not confirm"):
+            RabbitMQTaskPublisher(rabbitmq_settings()).publish(task)
+
+        connection.close.assert_called_once_with()
+
+    @patch("core.infrastructure.rabbitmq.pika.BlockingConnection")
+    def test_confirmed_publication_survives_connection_close_error(
+        self,
+        connection_factory,
+    ):
+        connection = connection_factory.return_value
+        channel = connection.channel.return_value
+        channel.basic_publish.return_value = True
+        connection.close.side_effect = RuntimeError("close failed")
+        task = Task(
+            id=self.task_id,
+            project_id=self.project_id,
+            title="Implement feature",
+            description="Publish the task",
+            agent=AgentRole.BACKEND,
+        )
+
+        with self.assertLogs(
+            "core.infrastructure.rabbitmq",
+            level="ERROR",
+        ):
+            RabbitMQTaskPublisher(rabbitmq_settings()).publish(task)
+
+        channel.basic_publish.assert_called_once()
 
 
 class TaskConsumerTests(unittest.TestCase):

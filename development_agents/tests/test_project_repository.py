@@ -3,7 +3,11 @@ from unittest.mock import call, patch
 from uuid import UUID
 
 from core.contracts.configuration import DatabaseSettings
-from core.contracts.repositories import ProjectCreator, ProjectReader
+from core.contracts.repositories import (
+    ProjectCreator,
+    ProjectDeleter,
+    ProjectReader,
+)
 from core.infrastructure.repositories.project_repository import (
     PostgresProjectRepository,
 )
@@ -144,6 +148,21 @@ class ProjectRepositoryTests(unittest.TestCase):
         )
 
         self.assertIsNone(project)
+
+    @patch("core.infrastructure.repositories.project_repository.psycopg.connect")
+    def test_delete_removes_only_the_requested_project(self, connect):
+        project_id = UUID("93de5ea5-729a-4c5e-8dc3-443165ed516b")
+        connection = connect.return_value.__enter__.return_value
+        cursor = connection.cursor.return_value.__enter__.return_value
+        repository = PostgresProjectRepository(self.settings)
+
+        self.assertIsInstance(repository, ProjectDeleter)
+        repository.delete(project_id)
+
+        cursor.execute.assert_called_once_with(
+            "DELETE FROM projects WHERE id = %s",
+            (project_id,),
+        )
 
 
 if __name__ == "__main__":

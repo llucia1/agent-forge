@@ -4,11 +4,15 @@ import psycopg
 from psycopg.types.json import Jsonb
 
 from core.contracts.configuration import DatabaseSettings
-from core.contracts.repositories import ProjectCreator, ProjectReader
+from core.contracts.repositories import (
+    ProjectCreator,
+    ProjectDeleter,
+    ProjectReader,
+)
 from core.models.project import Project
 
 
-class PostgresProjectRepository(ProjectCreator, ProjectReader):
+class PostgresProjectRepository(ProjectCreator, ProjectReader, ProjectDeleter):
     def __init__(self, settings: DatabaseSettings):
         self.settings = settings
 
@@ -95,3 +99,17 @@ class PostgresProjectRepository(ProjectCreator, ProjectReader):
             infrastructure=row[8],
             technical_constraints=row[9],
         )
+
+    def delete(self, project_id: UUID) -> None:
+        with psycopg.connect(
+            host=self.settings.host,
+            port=self.settings.port,
+            dbname=self.settings.database,
+            user=self.settings.user,
+            password=self.settings.password,
+        ) as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "DELETE FROM projects WHERE id = %s",
+                    (project_id,),
+                )

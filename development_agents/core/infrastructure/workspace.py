@@ -1,4 +1,5 @@
 import os
+import shutil
 import tempfile
 from pathlib import Path
 from uuid import UUID
@@ -7,6 +8,7 @@ from core.contracts.workspaces import (
     ArchitectureArtifactWriter,
     ProjectCodeWorkspace,
     ProjectWorkspaceInitializer,
+    ProjectWorkspaceRemover,
     WorkspaceBoundaryError,
     WorkspaceError,
 )
@@ -22,6 +24,7 @@ from core.models.workspace import (
 
 class FilesystemProjectWorkspace(
     ProjectWorkspaceInitializer,
+    ProjectWorkspaceRemover,
     ArchitectureArtifactWriter,
     ProjectCodeWorkspace,
 ):
@@ -51,6 +54,30 @@ class FilesystemProjectWorkspace(
 
     def initialize(self, project_id: UUID) -> None:
         self._resolve(project_id)
+
+    def remove(self, project_id: UUID) -> None:
+        if not isinstance(project_id, UUID):
+            raise WorkspaceBoundaryError(
+                "Project workspace identifier must be a UUID"
+            )
+        candidate = self.root / str(project_id)
+        if not candidate.exists():
+            return
+        if candidate.is_symlink():
+            raise WorkspaceBoundaryError(
+                f"Project workspace must not be a symbolic link: {project_id}"
+            )
+        resolved = candidate.resolve(strict=True)
+        if resolved.parent != self.root or not resolved.is_dir():
+            raise WorkspaceBoundaryError(
+                f"Project workspace escapes its configured root: {project_id}"
+            )
+        try:
+            shutil.rmtree(resolved)
+        except OSError as error:
+            raise WorkspaceError(
+                f"Could not remove project workspace for {project_id}"
+            ) from error
 
     def write(
         self,

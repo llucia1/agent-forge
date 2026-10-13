@@ -11,6 +11,7 @@ from core.contracts.workspaces import (
     ProjectCodeReader,
     ProjectCodeWorkspace,
     ProjectWorkspaceInitializer,
+    ProjectWorkspaceRemover,
     WorkspaceBoundaryError,
     WorkspaceError,
 )
@@ -50,6 +51,7 @@ class FilesystemProjectWorkspaceTests(unittest.TestCase):
             workspace = FilesystemProjectWorkspace(Path(root))
 
         self.assertIsInstance(workspace, ProjectWorkspaceInitializer)
+        self.assertIsInstance(workspace, ProjectWorkspaceRemover)
         self.assertIsInstance(workspace, ArchitectureArtifactWriter)
         self.assertIsInstance(workspace, ProjectCodeReader)
         self.assertIsInstance(workspace, ProjectCodeWorkspace)
@@ -71,6 +73,21 @@ class FilesystemProjectWorkspaceTests(unittest.TestCase):
                 stat.S_IMODE((root_path / str(PROJECT_ID)).stat().st_mode),
                 0o775,
             )
+
+    def test_removes_only_the_requested_project_workspace_idempotently(self):
+        with tempfile.TemporaryDirectory() as root:
+            root_path = Path(root)
+            workspace = FilesystemProjectWorkspace(root_path)
+            workspace.initialize(PROJECT_ID)
+            (root_path / str(PROJECT_ID) / "file.txt").write_text(
+                "content",
+                encoding="utf-8",
+            )
+
+            workspace.remove(PROJECT_ID)
+            workspace.remove(PROJECT_ID)
+
+            self.assertEqual(list(root_path.iterdir()), [])
 
     def test_writes_exact_canonical_json_and_leaves_no_temporary_file(self):
         with tempfile.TemporaryDirectory() as root:

@@ -3,11 +3,15 @@ from uuid import UUID
 import psycopg
 
 from core.contracts.configuration import DatabaseSettings
-from core.contracts.repositories import TaskCreator, TaskStatusWriter
+from core.contracts.repositories import (
+    TaskCreator,
+    TaskDeleter,
+    TaskStatusWriter,
+)
 from core.models.task import Task, TaskStatus
 
 
-class PostgresTaskRepository(TaskCreator, TaskStatusWriter):
+class PostgresTaskRepository(TaskCreator, TaskDeleter, TaskStatusWriter):
     def __init__(self, settings: DatabaseSettings):
         self.settings = settings
 
@@ -58,4 +62,18 @@ class PostgresTaskRepository(TaskCreator, TaskStatusWriter):
                     WHERE id = %s
                     """,
                     (str(status), task_id),
+                )
+
+    def delete(self, task_id: UUID) -> None:
+        with psycopg.connect(
+            host=self.settings.host,
+            port=self.settings.port,
+            dbname=self.settings.database,
+            user=self.settings.user,
+            password=self.settings.password,
+        ) as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "DELETE FROM tasks WHERE id = %s",
+                    (task_id,),
                 )

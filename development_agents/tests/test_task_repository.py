@@ -3,7 +3,11 @@ from unittest.mock import patch
 from uuid import UUID
 
 from core.contracts.configuration import DatabaseSettings
-from core.contracts.repositories import TaskCreator, TaskStatusWriter
+from core.contracts.repositories import (
+    TaskCreator,
+    TaskDeleter,
+    TaskStatusWriter,
+)
 from core.infrastructure.repositories.task_repository import (
     PostgresTaskRepository,
 )
@@ -83,6 +87,21 @@ class TaskRepositoryTests(unittest.TestCase):
 
         _, parameters = cursor.execute.call_args.args
         self.assertEqual(parameters, ("needs_input", task_id))
+
+    @patch("core.infrastructure.repositories.task_repository.psycopg.connect")
+    def test_delete_removes_only_the_requested_task(self, connect):
+        task_id = UUID("2cb5fe26-74a0-48f1-a989-aaf9b41b343b")
+        connection = connect.return_value.__enter__.return_value
+        cursor = connection.cursor.return_value.__enter__.return_value
+        repository = PostgresTaskRepository(self.settings)
+
+        self.assertIsInstance(repository, TaskDeleter)
+        repository.delete(task_id)
+
+        cursor.execute.assert_called_once_with(
+            "DELETE FROM tasks WHERE id = %s",
+            (task_id,),
+        )
 
 
 if __name__ == "__main__":

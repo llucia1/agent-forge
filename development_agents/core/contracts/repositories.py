@@ -17,10 +17,22 @@ class ProjectReader(ABC):
         """Return a project by id when it exists."""
 
 
+class ProjectDeleter(ABC):
+    @abstractmethod
+    def delete(self, project_id: UUID) -> None:
+        """Delete one project during orchestration compensation."""
+
+
 class TaskCreator(ABC):
     @abstractmethod
     def create(self, task: Task) -> None:
         """Persist a new task."""
+
+
+class TaskDeleter(ABC):
+    @abstractmethod
+    def delete(self, task_id: UUID) -> None:
+        """Delete one unpublished task during orchestration compensation."""
 
 
 class TaskStatusWriter(ABC):

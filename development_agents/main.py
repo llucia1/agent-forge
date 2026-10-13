@@ -52,6 +52,10 @@ def main():
         task_creator=task_repository,
         task_publisher=task_publisher,
         workspace_initializer=project_workspace,
+        project_reader=project_repository,
+        project_deleter=project_repository,
+        task_deleter=task_repository,
+        workspace_remover=project_workspace,
     )
     orchestrator_agent = OrchestratorAgent(orchestration)
     model_resolver = ModelResolver(
