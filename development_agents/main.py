@@ -56,6 +56,8 @@ def main():
         project_deleter=project_repository,
         task_deleter=task_repository,
         workspace_remover=project_workspace,
+        specification_reader=project_workspace,
+        specification_writer=project_workspace,
     )
     orchestrator_agent = OrchestratorAgent(orchestration)
     model_resolver = ModelResolver(
@@ -78,6 +80,7 @@ def main():
         project_reader=project_repository,
         engine=engine,
         context_provider=DefaultContextProvider(),
+        specification_reader=project_workspace,
     )
     backend_agent = BackendAgent(
         task_status_writer=task_repository,

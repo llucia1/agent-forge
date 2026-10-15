@@ -13,8 +13,15 @@ from core.contracts.repositories import (
 from core.contracts.workspaces import (
     ProjectWorkspaceInitializer,
     ProjectWorkspaceRemover,
+    SpecificationReader,
+    SpecificationWriter,
 )
 from core.models.project import Project
+from core.models.specification import (
+    FeatureSpecification,
+    ProjectSpecification,
+    validate_specification_path,
+)
 from core.models.task import AgentRole, Task
 
 
@@ -29,6 +36,8 @@ class Orchestrator(OrchestrationUseCases):
         project_deleter: ProjectDeleter,
         task_deleter: TaskDeleter,
         workspace_remover: ProjectWorkspaceRemover,
+        specification_reader: SpecificationReader | None = None,
+        specification_writer: SpecificationWriter | None = None,
     ):
         self.project_creator = project_creator
         self.task_creator = task_creator
@@ -38,6 +47,8 @@ class Orchestrator(OrchestrationUseCases):
         self.project_deleter = project_deleter
         self.task_deleter = task_deleter
         self.workspace_remover = workspace_remover
+        self.specification_reader = specification_reader
+        self.specification_writer = specification_writer
 
     def create_project(
         self,
@@ -49,6 +60,7 @@ class Orchestrator(OrchestrationUseCases):
         frontend_architecture: dict[str, Any] | None = None,
         infrastructure: dict[str, Any] | None = None,
         technical_constraints: list[str] | None = None,
+        project_markdown: str | None = None,
     ) -> Project:
         self._validate_text(name, "Project name")
         self._validate_text(description, "Project description")
@@ -111,11 +123,44 @@ class Orchestrator(OrchestrationUseCases):
         self.project_creator.create(project)
         try:
             self.workspace_initializer.initialize(project.id)
+            project_specification = ProjectSpecification.from_markdown(
+                project_markdown
+                if project_markdown is not None
+                else self._default_project_markdown(project)
+            )
+            if self.specification_writer is not None:
+                self.specification_writer.write_project_specification(
+                    project.id,
+                    project_specification,
+                )
         except Exception:
             self._compensate_project(project.id)
             raise
 
         return project
+
+    def register_specification(
+        self,
+        project: Project,
+        spec_path: str,
+        markdown: str,
+    ) -> str:
+        if not isinstance(project, Project):
+            raise ValueError("Specification project must be a Project")
+        if self.project_reader.find_by_id(project.id) is None:
+            raise ValueError(
+                f"Cannot register a spec for an unknown project: {project.id}"
+            )
+        if self.specification_writer is None:
+            raise ValueError("Specification writer is not configured")
+        validate_specification_path(spec_path)
+        specification = FeatureSpecification.from_markdown(markdown)
+        self.specification_writer.write_specification(
+            project.id,
+            spec_path,
+            specification,
+        )
+        return spec_path
 
     def create_task(
         self,
@@ -123,6 +168,7 @@ class Orchestrator(OrchestrationUseCases):
         title: str,
         description: str,
         agent: AgentRole,
+        spec_path: str | None = None,
     ) -> Task:
         if not isinstance(project, Project):
             raise ValueError("Task project must be a Project")
@@ -134,11 +180,31 @@ class Orchestrator(OrchestrationUseCases):
             raise ValueError(
                 f"Cannot create a task for an unknown project: {project.id}"
             )
+        specification_roles = {
+            AgentRole.BACKEND,
+            AgentRole.FRONTEND,
+            AgentRole.REVIEWER,
+            AgentRole.QA,
+        }
+        if agent in specification_roles and spec_path is None:
+            raise ValueError(f"Task for {agent} requires a specification")
+        if spec_path is not None:
+            validate_specification_path(spec_path)
+            if self.specification_reader is None:
+                raise ValueError("Specification reader is not configured")
+            if self.specification_reader.read_specification(
+                project.id,
+                spec_path,
+            ) is None:
+                raise ValueError(
+                    f"Task specification does not exist: {spec_path}"
+                )
         task = Task(
             project_id=project.id,
             title=title,
             description=description,
             agent=agent,
+            spec_path=spec_path,
         )
 
         self.task_creator.create(task)
@@ -174,3 +240,17 @@ class Orchestrator(OrchestrationUseCases):
     def _validate_text(value: str, field_name: str) -> None:
         if not isinstance(value, str) or not value.strip():
             raise ValueError(f"{field_name} must be non-empty text")
+
+    @staticmethod
+    def _default_project_markdown(project: Project) -> str:
+        rules = project.technical_constraints or [
+            "Implement only explicitly registered feature specifications."
+        ]
+        return (
+            f"# {project.name}\n\n"
+            f"## Objective\n{project.description}\n\n"
+            "## Scope\nThe functional scope is defined by specs/*.md.\n\n"
+            "## Global Rules\n"
+            + "\n".join(f"- {rule}" for rule in rules)
+            + "\n"
+        )

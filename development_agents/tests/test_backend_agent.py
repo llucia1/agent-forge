@@ -21,9 +21,34 @@ from core.models.task import AgentRole, Task, TaskStatus
 from core.models.task_result import TaskExecutionResult
 from core.models.workspace import WorkspaceFile
 from tests.architecture_fixtures import usable_architecture_sections
+from tests.specification_fixtures import feature_markdown, project_markdown
+from core.models.specification import FeatureSpecification, ProjectSpecification
 
 
 class BackendAgentTests(unittest.TestCase):
+    def test_sdd_task_passes_project_architecture_and_spec_to_engine(self):
+        self.task.spec_path = "specs/create-task.md"
+        self.workspace.read_project_specification.return_value = (
+            ProjectSpecification.from_markdown(project_markdown())
+        )
+        self.workspace.read_specification.return_value = (
+            FeatureSpecification.from_markdown(feature_markdown())
+        )
+
+        self.agent.handle(self.task)
+
+        implementation = self.engine.run.call_args.kwargs["context"][
+            "backend_implementation"
+        ]
+        self.assertEqual(
+            implementation["functional_contract"]["spec_path"],
+            "specs/create-task.md",
+        )
+        self.assertEqual(
+            implementation["architecture_artifact"],
+            self.architecture.to_dict(),
+        )
+
     def setUp(self):
         self.task = Task(
             id=UUID("2cb5fe26-74a0-48f1-a989-aaf9b41b343b"),

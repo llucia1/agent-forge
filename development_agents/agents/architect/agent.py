@@ -5,7 +5,10 @@ from core.contracts.engines import AgentEngine, EngineResult
 from core.contracts.messaging import TaskHandler
 from core.contracts.repositories import ProjectReader, TaskStatusWriter
 from core.contracts.results import TaskResultWriter
-from core.contracts.workspaces import ArchitectureArtifactWriter
+from core.contracts.workspaces import (
+    ArchitectureArtifactWriter,
+    SpecificationReader,
+)
 from core.models.architecture import (
     ArchitectureArtifact,
     ArchitectureArtifactValidationError,
@@ -43,6 +46,7 @@ PERSISTENCE_DECISION_KEYS = frozenset(
         "storage",
     }
 )
+MAX_ARCHITECTURE_ATTEMPTS = 3
 
 
 class ArchitectAgent(TaskHandler):
@@ -54,6 +58,7 @@ class ArchitectAgent(TaskHandler):
         project_reader: ProjectReader,
         engine: AgentEngine,
         context_provider: ContextProvider,
+        specification_reader: SpecificationReader | None = None,
     ):
         self.task_status_writer = task_status_writer
         self.task_result_writer = task_result_writer
@@ -61,6 +66,7 @@ class ArchitectAgent(TaskHandler):
         self.project_reader = project_reader
         self.engine = engine
         self.context_provider = context_provider
+        self.specification_reader = specification_reader
 
     def handle(self, task: Task) -> None:
         self._update_status(task, TaskStatus.IN_PROGRESS)
@@ -73,7 +79,13 @@ class ArchitectAgent(TaskHandler):
                     f"Project not found: {task.project_id}"
                 )
 
-            missing_decisions = self._missing_decisions(project)
+            functional_contract, functional_missing = (
+                self._functional_contract(task)
+            )
+            missing_decisions = [
+                *functional_missing,
+                *self._missing_decisions(project),
+            ]
             if missing_decisions:
                 artifact = self._needs_input_artifact(
                     project,
@@ -89,9 +101,34 @@ class ArchitectAgent(TaskHandler):
                 self._update_status(task, TaskStatus.NEEDS_INPUT)
                 return
 
-            engine_result = self.process(task, project)
-            artifact = ArchitectureArtifact.from_json(engine_result.output)
-            self._validate_project_authority(project, artifact)
+            validation_feedback = None
+            for attempt in range(1, MAX_ARCHITECTURE_ATTEMPTS + 1):
+                engine_result = self.process(
+                    task,
+                    project,
+                    functional_contract,
+                    validation_feedback,
+                )
+                try:
+                    artifact = ArchitectureArtifact.from_json(
+                        engine_result.output
+                    )
+                    self._validate_project_authority(project, artifact)
+                    break
+                except ArchitectureArtifactValidationError as error:
+                    if attempt == MAX_ARCHITECTURE_ATTEMPTS:
+                        raise
+                    validation_feedback = {
+                        "attempt": attempt,
+                        "validation_error": str(error),
+                        "previous_output": engine_result.output,
+                        "instruction": (
+                            "Return the complete corrected architecture. "
+                            "Preserve Project and functional specification "
+                            "authority exactly and change only what is needed "
+                            "to satisfy the validation error."
+                        ),
+                    }
             self._persist(task, engine_result, artifact)
             final_status = (
                 TaskStatus.NEEDS_INPUT
@@ -107,16 +144,60 @@ class ArchitectAgent(TaskHandler):
 
             raise
 
-    def process(self, task: Task, project: Project) -> EngineResult:
+    def process(
+        self,
+        task: Task,
+        project: Project,
+        functional_contract: dict[str, Any] | None = None,
+        validation_feedback: dict[str, Any] | None = None,
+    ) -> EngineResult:
         context = {
             **self.context_provider.build(task, project),
             "output_contract": self._output_contract(project),
         }
+        if functional_contract is not None:
+            context["functional_contract"] = functional_contract
+        if validation_feedback is not None:
+            context["architecture_validation_feedback"] = (
+                validation_feedback
+            )
         return self.engine.run(
             task=task,
             project=project,
             context=context,
         )
+
+    def _functional_contract(
+        self,
+        task: Task,
+    ) -> tuple[dict[str, Any] | None, list[str]]:
+        if task.spec_path is None:
+            return None, []
+        if self.specification_reader is None:
+            return None, ["specification_reader"]
+        project_spec = self.specification_reader.read_project_specification(
+            task.project_id
+        )
+        feature_spec = self.specification_reader.read_specification(
+            task.project_id,
+            task.spec_path,
+        )
+        missing = []
+        if project_spec is None:
+            missing.append("project_specification")
+        if feature_spec is None:
+            missing.append("feature_specification")
+        if missing:
+            return None, missing
+        return {
+            "project_markdown": project_spec.markdown,
+            "spec_path": task.spec_path,
+            "spec_markdown": feature_spec.markdown,
+            "instruction": (
+                "Use the functional specifications to decide what must be "
+                "supported; architecture.json remains authoritative for how."
+            ),
+        }, []
 
     def _persist(
         self,

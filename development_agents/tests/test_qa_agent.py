@@ -11,6 +11,7 @@ from core.contracts.results import LatestTaskExecutionReader, TaskResultWriter
 from core.contracts.workspaces import ProjectCodeReader
 from core.models.architecture import ArchitectureArtifact
 from core.models.project import Project
+from core.models.specification import FeatureSpecification, ProjectSpecification
 from core.models.qa import (
     ExecutableRule,
     QACheck,
@@ -24,9 +25,87 @@ from core.models.task import AgentRole, Task, TaskStatus
 from core.models.task_result import AgentTaskExecution, TaskExecutionResult
 from core.models.workspace import ProjectSnapshot, WorkspaceFile
 from tests.architecture_fixtures import usable_architecture_sections
+from tests.specification_fixtures import feature_markdown, project_markdown
 
 
 class QAAgentTests(unittest.TestCase):
+    def test_sdd_executes_only_checks_mapped_by_acceptance_criteria(self):
+        self.task.spec_path = "specs/create-task.md"
+        specification = FeatureSpecification.from_markdown(
+            feature_markdown("acceptance-check")
+        )
+        self.workspace_reader.read_project_specification.return_value = (
+            ProjectSpecification.from_markdown(project_markdown())
+        )
+        self.workspace_reader.read_specification.return_value = specification
+        self.review_result.metadata.update(
+            {
+                "spec_path": self.task.spec_path,
+                "spec_fingerprint": specification.fingerprint,
+            }
+        )
+        selected = QACheck(
+            id="acceptance-check",
+            command=QACommand("quality-tool", ("verify",), "backend"),
+            evidence_paths=("backend/project.conf",),
+            timeout_seconds=10,
+        )
+        unrelated = QACheck(
+            id="unrelated-check",
+            command=QACommand("quality-tool", ("other",), "backend"),
+            evidence_paths=("backend/project.conf",),
+            timeout_seconds=10,
+        )
+        policy = QAExecutionPolicy(
+            (
+                ExecutableRule(
+                    "quality-tool",
+                    (("verify",), ("other",)),
+                    ("backend",),
+                    20,
+                ),
+            ),
+            1024,
+        )
+        evidence_hash = "sha256:" + hashlib.sha256(
+            b"check = true\n"
+        ).hexdigest()
+        self.executor.execute.return_value = QAExecutionResult(
+            (
+                QACheckResult(
+                    id="acceptance-check",
+                    status=QACheckStatus.PASSED,
+                    exit_code=0,
+                    duration_ms=1,
+                    stdout_excerpt="ok",
+                    stderr_excerpt="",
+                    output_truncated=False,
+                    failure_reason=None,
+                    evidence_hashes={"backend/project.conf": evidence_hash},
+                ),
+            )
+        )
+        self.agent = QAAgent(
+            self.status_writer,
+            self.result_writer,
+            self.execution_reader,
+            self.project_reader,
+            self.workspace_reader,
+            self.executor,
+            policy,
+            (selected, unrelated),
+        )
+
+        self.agent.handle(self.task)
+
+        snapshot = ProjectSnapshot.create(self.architecture, self.files)
+        self.executor.execute.assert_called_once_with(
+            snapshot,
+            (selected,),
+            snapshot.fingerprint,
+        )
+        self.assertEqual(self._persisted_payload()["status"], "passed")
+
     def setUp(self):
         self.project_id = UUID("93de5ea5-729a-4c5e-8dc3-443165ed516b")
         self.task = Task(

@@ -15,11 +15,13 @@ from core.contracts.results import TaskResultWriter
 from core.contracts.workspaces import ProjectCodeReader
 from core.models.architecture import ArchitectureArtifact
 from core.models.project import Project
+from core.models.specification import FeatureSpecification, ProjectSpecification
 from core.models.review import ReviewStatus, ReviewValidationError
 from core.models.task import AgentRole, Task, TaskStatus
 from core.models.task_result import TaskExecutionResult
 from core.models.workspace import ProjectSnapshot, WorkspaceFile
 from tests.architecture_fixtures import usable_architecture_sections
+from tests.specification_fixtures import feature_markdown, project_markdown
 
 
 EXPECTED_RULES = [
@@ -41,6 +43,37 @@ EXPECTED_RULES = [
 
 
 class ReviewerAgentTests(unittest.TestCase):
+    def test_sdd_review_binds_specification_context_and_fingerprint(self):
+        self.task.spec_path = "specs/create-task.md"
+        project_spec = ProjectSpecification.from_markdown(project_markdown())
+        feature_spec = FeatureSpecification.from_markdown(feature_markdown())
+        self.workspace_reader.read_project_specification.return_value = (
+            project_spec
+        )
+        self.workspace_reader.read_specification.return_value = feature_spec
+        output = self._expected_output()
+        output["checked_rules"].append("spec.functional_contract")
+        self.engine.run.return_value = EngineResult(
+            output=json.dumps(output),
+            metadata={},
+            provider="litellm",
+            model_alias="review-model",
+        )
+
+        self.agent.handle(self.task)
+
+        context = self.engine.run.call_args.kwargs["context"]
+        self.assertEqual(
+            context["review"]["functional_contract"]["spec_path"],
+            self.task.spec_path,
+        )
+        persisted = self.task_result_writer.write.call_args.args[0]
+        self.assertEqual(persisted.metadata["spec_path"], self.task.spec_path)
+        self.assertEqual(
+            persisted.metadata["spec_fingerprint"],
+            feature_spec.fingerprint,
+        )
+
     def setUp(self):
         self.task = Task(
             id=UUID("e8d43f59-c694-4446-817d-76faa6e51fe9"),

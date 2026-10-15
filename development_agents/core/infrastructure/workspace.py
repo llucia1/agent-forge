@@ -9,10 +9,16 @@ from core.contracts.workspaces import (
     ProjectCodeWorkspace,
     ProjectWorkspaceInitializer,
     ProjectWorkspaceRemover,
+    SpecificationWriter,
     WorkspaceBoundaryError,
     WorkspaceError,
 )
 from core.models.architecture import ArchitectureArtifact
+from core.models.specification import (
+    FeatureSpecification,
+    ProjectSpecification,
+    validate_specification_path,
+)
 from core.models.workspace import (
     EDITABLE_TEXT_FILE_NAMES,
     EDITABLE_TEXT_SUFFIXES,
@@ -26,6 +32,7 @@ class FilesystemProjectWorkspace(
     ProjectWorkspaceInitializer,
     ProjectWorkspaceRemover,
     ArchitectureArtifactWriter,
+    SpecificationWriter,
     ProjectCodeWorkspace,
 ):
     def __init__(self, root: Path):
@@ -90,6 +97,62 @@ class FilesystemProjectWorkspace(
             target,
             artifact.to_json(),
             f"architecture artifact for {project_id}",
+        )
+
+    def write_project_specification(
+        self,
+        project_id: UUID,
+        specification: ProjectSpecification,
+    ) -> None:
+        workspace = self._resolve(project_id)
+        self._atomic_write(
+            workspace / "project.md",
+            specification.markdown,
+            f"project specification for {project_id}",
+        )
+
+    def write_specification(
+        self,
+        project_id: UUID,
+        spec_path: str,
+        specification: FeatureSpecification,
+    ) -> None:
+        validate_specification_path(spec_path)
+        workspace = self._resolve(project_id)
+        target = self._create_parent_directories(workspace, spec_path)
+        self._validate_target(workspace, target)
+        self._atomic_write(
+            target,
+            specification.markdown,
+            f"feature specification {spec_path} for {project_id}",
+        )
+
+    def read_project_specification(
+        self,
+        project_id: UUID,
+    ) -> ProjectSpecification | None:
+        workspace = self._resolve(project_id)
+        target = workspace / "project.md"
+        if not target.exists():
+            return None
+        resolved = self._resolve_existing_file(workspace, target)
+        return ProjectSpecification.from_markdown(
+            resolved.read_text(encoding="utf-8")
+        )
+
+    def read_specification(
+        self,
+        project_id: UUID,
+        spec_path: str,
+    ) -> FeatureSpecification | None:
+        validate_specification_path(spec_path)
+        workspace = self._resolve(project_id)
+        target = workspace.joinpath(*spec_path.split("/"))
+        if not target.exists():
+            return None
+        resolved = self._resolve_existing_file(workspace, target)
+        return FeatureSpecification.from_markdown(
+            resolved.read_text(encoding="utf-8")
         )
 
     def read_architecture(

@@ -31,5 +31,6 @@ class Task:
     title: str
     description: str
     agent: AgentRole
+    spec_path: str | None = None
     id: UUID = field(default_factory=uuid4)
     status: TaskStatus = TaskStatus.PENDING

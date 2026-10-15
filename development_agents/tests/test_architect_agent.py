@@ -8,7 +8,7 @@ from core.contracts.context import ContextProvider
 from core.contracts.engines import AgentEngine, EngineResult
 from core.contracts.repositories import ProjectReader, TaskStatusWriter
 from core.contracts.results import TaskResultWriter
-from core.contracts.workspaces import ArchitectureArtifactWriter
+from core.contracts.workspaces import ArchitectureArtifactWriter, SpecificationReader
 from core.models.architecture import (
     ArchitectureArtifact,
     ArchitectureArtifactValidationError,
@@ -16,9 +16,29 @@ from core.models.architecture import (
 from core.models.project import Project
 from core.models.task import AgentRole, Task, TaskStatus
 from core.models.task_result import TaskExecutionResult
+from core.models.specification import FeatureSpecification, ProjectSpecification
+from tests.specification_fixtures import feature_markdown, project_markdown
 
 
 class ArchitectAgentTests(unittest.TestCase):
+    def test_sdd_task_includes_functional_contract_in_architecture_context(self):
+        self.task.spec_path = "specs/create-task.md"
+        reader = Mock(spec=SpecificationReader)
+        reader.read_project_specification.return_value = (
+            ProjectSpecification.from_markdown(project_markdown())
+        )
+        reader.read_specification.return_value = (
+            FeatureSpecification.from_markdown(feature_markdown())
+        )
+        self.agent.specification_reader = reader
+
+        self.agent.handle(self.task)
+
+        functional = self.engine.run.call_args.kwargs["context"][
+            "functional_contract"
+        ]
+        self.assertEqual(functional["spec_path"], "specs/create-task.md")
+        self.assertIn("Acceptance Criteria", functional["spec_markdown"])
     def setUp(self):
         self.task = Task(
             id=UUID("2cb5fe26-74a0-48f1-a989-aaf9b41b343b"),

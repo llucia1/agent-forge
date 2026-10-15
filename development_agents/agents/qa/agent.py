@@ -110,6 +110,32 @@ class QAAgent(TaskHandler):
                 )
                 return
 
+            specification = None
+            if task.spec_path is not None:
+                project_spec = (
+                    self.workspace_reader.read_project_specification(
+                        task.project_id
+                    )
+                )
+                specification = self.workspace_reader.read_specification(
+                    task.project_id,
+                    task.spec_path,
+                )
+                missing_specifications = []
+                if project_spec is None:
+                    missing_specifications.append("project_specification")
+                if specification is None:
+                    missing_specifications.append("feature_specification")
+                if missing_specifications:
+                    self._persist_needs_input(
+                        task,
+                        project,
+                        None,
+                        None,
+                        tuple(missing_specifications),
+                    )
+                    return
+
             latest_review = self.task_execution_reader.find_latest(
                 task.project_id,
                 AgentRole.REVIEWER,
@@ -150,6 +176,20 @@ class QAAgent(TaskHandler):
                 result_id=latest_review.result.id,
                 status=review.status,
             )
+            if specification is not None and (
+                latest_review.result.metadata.get("spec_path")
+                != task.spec_path
+                or latest_review.result.metadata.get("spec_fingerprint")
+                != specification.fingerprint
+            ):
+                self._persist_needs_input(
+                    task,
+                    project,
+                    gate,
+                    None,
+                    ("reviewed_specification_provenance",),
+                )
+                return
             if review.technical_baseline != self._baseline(project):
                 self._persist_needs_input(
                     task,
@@ -198,7 +238,38 @@ class QAAgent(TaskHandler):
                     ("reviewed_workspace_provenance",),
                 )
                 return
-            if not self.authorized_checks:
+            selected_checks = self.authorized_checks
+            if specification is not None:
+                configured = {
+                    check.id: check for check in self.authorized_checks
+                }
+                required_ids = tuple(
+                    dict.fromkeys(
+                        criterion.check_id
+                        for criterion in specification.acceptance_criteria
+                    )
+                )
+                missing_checks = [
+                    check_id
+                    for check_id in required_ids
+                    if check_id not in configured
+                ]
+                if missing_checks:
+                    self._persist_needs_input(
+                        task,
+                        project,
+                        gate,
+                        snapshot.fingerprint,
+                        tuple(
+                            f"acceptance_check:{check_id}"
+                            for check_id in missing_checks
+                        ),
+                    )
+                    return
+                selected_checks = tuple(
+                    configured[check_id] for check_id in required_ids
+                )
+            if not selected_checks:
                 self._persist_needs_input(
                     task,
                     project,
@@ -208,7 +279,7 @@ class QAAgent(TaskHandler):
                 )
                 return
 
-            check_ids = [check.id for check in self.authorized_checks]
+            check_ids = [check.id for check in selected_checks]
             if len(set(check_ids)) != len(check_ids):
                 self._persist_needs_input(
                     task,
@@ -225,7 +296,7 @@ class QAAgent(TaskHandler):
                         snapshot,
                         self.execution_policy,
                     )
-                    for check in self.authorized_checks
+                    for check in selected_checks
                 }
             except QAValidationError:
                 self._persist_needs_input(
@@ -239,15 +310,17 @@ class QAAgent(TaskHandler):
 
             execution = self.executor.execute(
                 snapshot,
-                self.authorized_checks,
+                selected_checks,
                 reviewed_fingerprint,
             )
             if not self._execution_is_trustworthy(
                 execution.checks,
                 expected_evidence,
+                selected_checks,
             ):
                 execution_checks = self._untrusted_execution_checks(
-                    expected_evidence
+                    expected_evidence,
+                    selected_checks,
                 )
             else:
                 execution_checks = execution.checks
@@ -376,10 +449,11 @@ class QAAgent(TaskHandler):
         self,
         checks: tuple[QACheckResult, ...],
         expected_evidence: dict[str, dict[str, str]],
+        selected_checks: tuple[QACheck, ...],
     ) -> bool:
         if not isinstance(checks, tuple):
             return False
-        expected_ids = tuple(check.id for check in self.authorized_checks)
+        expected_ids = tuple(check.id for check in selected_checks)
         if tuple(
             check.id if isinstance(check, QACheckResult) else None
             for check in checks
@@ -393,6 +467,7 @@ class QAAgent(TaskHandler):
     def _untrusted_execution_checks(
         self,
         expected_evidence: dict[str, dict[str, str]],
+        selected_checks: tuple[QACheck, ...],
     ) -> tuple[QACheckResult, ...]:
         return tuple(
             QACheckResult(
@@ -406,7 +481,7 @@ class QAAgent(TaskHandler):
                 failure_reason="untrusted_execution_result",
                 evidence_hashes=expected_evidence[check.id],
             )
-            for check in self.authorized_checks
+            for check in selected_checks
         )
 
     @staticmethod

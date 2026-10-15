@@ -33,8 +33,12 @@ CREATE TABLE IF NOT EXISTS tasks (
     description TEXT NOT NULL,
     agent VARCHAR(100) NOT NULL,
     status VARCHAR(50) NOT NULL,
+    spec_path TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE tasks
+    ADD COLUMN IF NOT EXISTS spec_path TEXT;
 
 CREATE INDEX IF NOT EXISTS idx_tasks_project_id ON tasks(project_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);

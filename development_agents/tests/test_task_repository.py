@@ -41,7 +41,8 @@ class TaskRepositoryTests(unittest.TestCase):
             " ".join(statement.split()),
             (
                 "INSERT INTO tasks ( id, project_id, title, description, "
-                "agent, status ) VALUES (%s, %s, %s, %s, %s, %s)"
+                "agent, status, spec_path ) VALUES "
+                "(%s, %s, %s, %s, %s, %s, %s)"
             ),
         )
         self.assertEqual(
@@ -53,6 +54,7 @@ class TaskRepositoryTests(unittest.TestCase):
                 task.description,
                 "architect",
                 "pending",
+                None,
             ),
         )
 

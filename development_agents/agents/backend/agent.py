@@ -120,6 +120,13 @@ class BackendAgent(TaskHandler):
                 )
                 return
 
+            functional_contract = self._read_functional_contract(
+                task,
+                project,
+            )
+            if task.spec_path is not None and functional_contract is None:
+                return
+
             missing_decisions = [
                 field_name
                 for field_name in REQUIRED_BACKEND_FIELDS
@@ -154,6 +161,7 @@ class BackendAgent(TaskHandler):
                     task,
                     project,
                     architecture,
+                    functional_contract,
                     existing_files,
                     validation_feedback,
                 )
@@ -209,6 +217,7 @@ class BackendAgent(TaskHandler):
         task: Task,
         project: Project,
         architecture: ArchitectureArtifact,
+        functional_contract: dict[str, Any] | None,
         existing_files: list[WorkspaceFile],
         validation_feedback: dict[str, Any] | None = None,
     ) -> EngineResult:
@@ -221,6 +230,7 @@ class BackendAgent(TaskHandler):
             "backend_implementation": self._implementation_context(
                 project,
                 architecture,
+                functional_contract,
                 existing_files,
             ),
         }
@@ -231,6 +241,42 @@ class BackendAgent(TaskHandler):
             project=project,
             context=context,
         )
+
+    def _read_functional_contract(
+        self,
+        task: Task,
+        project: Project,
+    ) -> dict[str, Any] | None:
+        if task.spec_path is None:
+            return None
+        project_spec = self.workspace.read_project_specification(
+            task.project_id
+        )
+        specification = self.workspace.read_specification(
+            task.project_id,
+            task.spec_path,
+        )
+        missing = []
+        if project_spec is None:
+            missing.append("project_specification")
+        if specification is None:
+            missing.append("feature_specification")
+        if missing:
+            self._persist_needs_input(task, project, missing)
+            return None
+        return {
+            "project_markdown": project_spec.markdown,
+            "spec_path": task.spec_path,
+            "spec_markdown": specification.markdown,
+            "acceptance_criteria": [
+                {
+                    "id": criterion.id,
+                    "check_id": criterion.check_id,
+                    "description": criterion.description,
+                }
+                for criterion in specification.acceptance_criteria
+            ],
+        }
 
     def _persist_needs_input(
         self,
@@ -375,6 +421,7 @@ class BackendAgent(TaskHandler):
         cls,
         project: Project,
         architecture: ArchitectureArtifact,
+        functional_contract: dict[str, Any] | None,
         existing_files: list[WorkspaceFile],
     ) -> dict[str, Any]:
         mandatory_rules = [
@@ -415,6 +462,7 @@ class BackendAgent(TaskHandler):
         implementation_context = {
             "mandatory_rules": mandatory_rules,
             "architecture_artifact": architecture.to_dict(),
+            "functional_contract": functional_contract,
             "backend_requirements": cls._backend_requirements(architecture),
             "module_packages": {
                 module: f"backend/{_python_package_name(module)}"

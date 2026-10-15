@@ -58,16 +58,17 @@ class RabbitMQTaskPublisher(TaskPublisher):
     def publish(self, task: Task) -> None:
         queue = _get_task_queue(self.settings, task.agent)
 
-        message = json.dumps(
-            {
-                "id": str(task.id),
-                "project_id": str(task.project_id),
-                "title": task.title,
-                "description": task.description,
-                "agent": str(task.agent),
-                "status": str(task.status),
-            }
-        ).encode("utf-8")
+        payload = {
+            "id": str(task.id),
+            "project_id": str(task.project_id),
+            "title": task.title,
+            "description": task.description,
+            "agent": str(task.agent),
+            "status": str(task.status),
+        }
+        if task.spec_path is not None:
+            payload["spec_path"] = task.spec_path
+        message = json.dumps(payload).encode("utf-8")
 
         connection = _create_connection(self.settings)
 
@@ -323,4 +324,5 @@ class RabbitMQTaskConsumer(TaskConsumer):
             description=message["description"],
             agent=AgentRole(message["agent"]),
             status=TaskStatus(message["status"]),
+            spec_path=message.get("spec_path"),
         )

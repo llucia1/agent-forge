@@ -12,13 +12,93 @@ from core.contracts.repositories import (
 from core.contracts.workspaces import (
     ProjectWorkspaceInitializer,
     ProjectWorkspaceRemover,
+    SpecificationReader,
+    SpecificationWriter,
 )
 from core.models.project import Project
+from core.models.specification import (
+    FeatureSpecification,
+    ProjectSpecification,
+)
 from core.models.task import AgentRole
 from core.orchestration.orchestrator import Orchestrator
+from tests.specification_fixtures import feature_markdown, project_markdown
 
 
 class OrchestratorTaskPublishingTests(unittest.TestCase):
+    def test_creates_project_md_and_registers_validated_feature_spec(self):
+        project_reader = Mock(spec=ProjectReader)
+        specification_reader = Mock(spec=SpecificationReader)
+        specification_writer = Mock(spec=SpecificationWriter)
+        orchestrator = Orchestrator(
+            project_creator=Mock(spec=ProjectCreator),
+            task_creator=Mock(spec=TaskCreator),
+            task_publisher=Mock(spec=TaskPublisher),
+            workspace_initializer=Mock(spec=ProjectWorkspaceInitializer),
+            project_reader=project_reader,
+            project_deleter=Mock(spec=ProjectDeleter),
+            task_deleter=Mock(spec=TaskDeleter),
+            workspace_remover=Mock(spec=ProjectWorkspaceRemover),
+            specification_reader=specification_reader,
+            specification_writer=specification_writer,
+        )
+
+        project = orchestrator.create_project(
+            "Task Tracker",
+            "Track tasks",
+            project_markdown=project_markdown(),
+        )
+        project_reader.find_by_id.return_value = project
+        path = orchestrator.register_specification(
+            project,
+            "specs/create-task.md",
+            feature_markdown(),
+        )
+
+        written_project = (
+            specification_writer.write_project_specification.call_args.args[1]
+        )
+        written_feature = (
+            specification_writer.write_specification.call_args.args[2]
+        )
+        self.assertIsInstance(written_project, ProjectSpecification)
+        self.assertIsInstance(written_feature, FeatureSpecification)
+        self.assertEqual(path, "specs/create-task.md")
+
+    def test_functional_task_requires_existing_spec_and_publishes_reference(self):
+        project = Project(name="Task Tracker", description="Track tasks")
+        project_reader = Mock(spec=ProjectReader)
+        project_reader.find_by_id.return_value = project
+        specification_reader = Mock(spec=SpecificationReader)
+        specification_reader.read_specification.return_value = (
+            FeatureSpecification.from_markdown(feature_markdown())
+        )
+        task_creator = Mock(spec=TaskCreator)
+        task_publisher = Mock(spec=TaskPublisher)
+        orchestrator = Orchestrator(
+            project_creator=Mock(spec=ProjectCreator),
+            task_creator=task_creator,
+            task_publisher=task_publisher,
+            workspace_initializer=Mock(spec=ProjectWorkspaceInitializer),
+            project_reader=project_reader,
+            project_deleter=Mock(spec=ProjectDeleter),
+            task_deleter=Mock(spec=TaskDeleter),
+            workspace_remover=Mock(spec=ProjectWorkspaceRemover),
+            specification_reader=specification_reader,
+            specification_writer=Mock(spec=SpecificationWriter),
+        )
+
+        task = orchestrator.create_task(
+            project,
+            "Implement backend",
+            "Implement create task",
+            AgentRole.BACKEND,
+            "specs/create-task.md",
+        )
+
+        self.assertEqual(task.spec_path, "specs/create-task.md")
+        task_creator.create.assert_called_once_with(task)
+        task_publisher.publish.assert_called_once_with(task)
     def test_create_project_persists_technical_definition(self):
         project_creator = Mock(spec=ProjectCreator)
         workspace_initializer = Mock(spec=ProjectWorkspaceInitializer)

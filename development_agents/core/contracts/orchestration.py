@@ -17,8 +17,18 @@ class OrchestrationUseCases(ABC):
         frontend_architecture: dict[str, Any] | None = None,
         infrastructure: dict[str, Any] | None = None,
         technical_constraints: list[str] | None = None,
+        project_markdown: str | None = None,
     ) -> Project:
         """Create and persist a project."""
+
+    @abstractmethod
+    def register_specification(
+        self,
+        project: Project,
+        spec_path: str,
+        markdown: str,
+    ) -> str:
+        """Validate and persist one functional specification."""
 
     @abstractmethod
     def create_task(
@@ -27,5 +37,6 @@ class OrchestrationUseCases(ABC):
         title: str,
         description: str,
         agent: AgentRole,
+        spec_path: str | None = None,
     ) -> Task:
         """Create, persist and publish a task."""

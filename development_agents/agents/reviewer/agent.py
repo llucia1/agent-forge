@@ -118,6 +118,13 @@ class ReviewerAgent(TaskHandler):
                 )
                 return
 
+            functional_contract = self._read_functional_contract(
+                task,
+                project,
+            )
+            if task.spec_path is not None and functional_contract is None:
+                return
+
             missing_decisions = [
                 field_name
                 for field_name in REQUIRED_TECHNICAL_FIELDS
@@ -142,6 +149,7 @@ class ReviewerAgent(TaskHandler):
                 architecture,
                 backend_files,
                 frontend_files,
+                functional_contract,
             )
             expected_findings = self._inspect_workspace(
                 project,
@@ -163,6 +171,7 @@ class ReviewerAgent(TaskHandler):
                     backend_files,
                     frontend_files,
                     shared_files,
+                    functional_contract,
                     rule_catalog,
                     expected_status,
                     expected_findings,
@@ -192,16 +201,26 @@ class ReviewerAgent(TaskHandler):
                         ),
                     }
 
+            result_metadata = {
+                **engine_result.metadata,
+                "workspace_fingerprint": ProjectSnapshot.create(
+                    architecture,
+                    workspace_files,
+                ).fingerprint,
+                "deterministic_findings": len(expected_findings),
+            }
+            if functional_contract is not None:
+                result_metadata.update(
+                    {
+                        "spec_path": task.spec_path,
+                        "spec_fingerprint": functional_contract[
+                            "spec_fingerprint"
+                        ],
+                    }
+                )
             engine_result = EngineResult(
                 output=engine_result.output,
-                metadata={
-                    **engine_result.metadata,
-                    "workspace_fingerprint": ProjectSnapshot.create(
-                        architecture,
-                        workspace_files,
-                    ).fingerprint,
-                    "deterministic_findings": len(expected_findings),
-                },
+                metadata=result_metadata,
                 provider=engine_result.provider,
                 model_alias=engine_result.model_alias,
             )
@@ -222,6 +241,7 @@ class ReviewerAgent(TaskHandler):
         backend_files: list[WorkspaceFile],
         frontend_files: list[WorkspaceFile],
         shared_files: list[WorkspaceFile],
+        functional_contract: dict[str, Any] | None,
         rule_catalog: list[dict[str, Any]],
         expected_status: ReviewStatus,
         expected_findings: list[ReviewFinding],
@@ -241,6 +261,7 @@ class ReviewerAgent(TaskHandler):
                 "backend_files": self._serialize_files(backend_files),
                 "frontend_files": self._serialize_files(frontend_files),
                 "shared_files": self._serialize_files(shared_files),
+                "functional_contract": functional_contract,
                 "deterministic_status": str(expected_status),
                 "deterministic_findings": [
                     finding.to_dict() for finding in expected_findings
@@ -250,6 +271,43 @@ class ReviewerAgent(TaskHandler):
         if validation_feedback is not None:
             context["review_validation_feedback"] = validation_feedback
         return self.engine.run(task=task, project=project, context=context)
+
+    def _read_functional_contract(
+        self,
+        task: Task,
+        project: Project,
+    ) -> dict[str, Any] | None:
+        if task.spec_path is None:
+            return None
+        project_spec = self.workspace_reader.read_project_specification(
+            task.project_id
+        )
+        specification = self.workspace_reader.read_specification(
+            task.project_id,
+            task.spec_path,
+        )
+        missing = []
+        if project_spec is None:
+            missing.append("project_specification")
+        if specification is None:
+            missing.append("feature_specification")
+        if missing:
+            self._persist_needs_input(task, project, missing)
+            return None
+        return {
+            "project_markdown": project_spec.markdown,
+            "spec_path": task.spec_path,
+            "spec_markdown": specification.markdown,
+            "spec_fingerprint": specification.fingerprint,
+            "acceptance_criteria": [
+                {
+                    "id": criterion.id,
+                    "check_id": criterion.check_id,
+                    "description": criterion.description,
+                }
+                for criterion in specification.acceptance_criteria
+            ],
+        }
 
     def _persist_needs_input(
         self,
@@ -352,8 +410,9 @@ class ReviewerAgent(TaskHandler):
         architecture: ArchitectureArtifact,
         backend_files: list[WorkspaceFile],
         frontend_files: list[WorkspaceFile],
+        functional_contract: dict[str, Any] | None,
     ) -> list[dict[str, Any]]:
-        return [
+        rules = [
             {"id": "project.backend_stack", "value": project.backend_stack},
             {
                 "id": "project.backend_architecture",
@@ -402,6 +461,14 @@ class ReviewerAgent(TaskHandler):
                 },
             },
         ]
+        if functional_contract is not None:
+            rules.append(
+                {
+                    "id": "spec.functional_contract",
+                    "value": functional_contract,
+                }
+            )
+        return rules
 
     @staticmethod
     def _classify_files(

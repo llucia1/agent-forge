@@ -32,9 +32,10 @@ class PostgresTaskRepository(TaskCreator, TaskDeleter, TaskStatusWriter):
                         title,
                         description,
                         agent,
-                        status
+                        status,
+                        spec_path
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
                     """,
                     (
                         task.id,
@@ -43,6 +44,7 @@ class PostgresTaskRepository(TaskCreator, TaskDeleter, TaskStatusWriter):
                         task.description,
                         str(task.agent),
                         str(task.status),
+                        task.spec_path,
                     ),
                 )
 
