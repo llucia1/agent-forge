@@ -8,7 +8,10 @@ from core.contracts.context import ContextProvider
 from core.contracts.engines import AgentEngine, EngineResult
 from core.contracts.repositories import ProjectReader, TaskStatusWriter
 from core.contracts.results import TaskResultWriter
-from core.contracts.workspaces import ArchitectureArtifactWriter, SpecificationReader
+from core.contracts.workspaces import (
+    ArchitectureArtifactWriter,
+    SpecificationReader,
+)
 from core.models.architecture import (
     ArchitectureArtifact,
     ArchitectureArtifactValidationError,
@@ -16,7 +19,10 @@ from core.models.architecture import (
 from core.models.project import Project
 from core.models.task import AgentRole, Task, TaskStatus
 from core.models.task_result import TaskExecutionResult
-from core.models.specification import FeatureSpecification, ProjectSpecification
+from core.models.specification import (
+    FeatureSpecification,
+    ProjectSpecification,
+)
 from tests.specification_fixtures import feature_markdown, project_markdown
 
 
@@ -39,6 +45,7 @@ class ArchitectAgentTests(unittest.TestCase):
         ]
         self.assertEqual(functional["spec_path"], "specs/create-task.md")
         self.assertIn("Acceptance Criteria", functional["spec_markdown"])
+
     def setUp(self):
         self.task = Task(
             id=UUID("2cb5fe26-74a0-48f1-a989-aaf9b41b343b"),
@@ -237,6 +244,9 @@ class ArchitectAgentTests(unittest.TestCase):
             context={
                 **self.context,
                 "output_contract": self.agent._output_contract(self.project),
+                "architecture_generation_guidance": (
+                    self.agent._generation_guidance(self.project)
+                ),
             },
         )
         self.task_result_writer.write.assert_called_once()
@@ -258,6 +268,48 @@ class ArchitectAgentTests(unittest.TestCase):
             expected_artifact,
         )
         self.assertEqual(self.task.status, "completed")
+
+    def test_retry_feedback_is_compact_and_exposes_invalid_relationships(self):
+        invalid = json.loads(json.dumps(self.architecture_output))
+        invalid["interfaces"][0]["consumers"] = ["backend"]
+        self.engine.run.side_effect = [
+            EngineResult(
+                output=json.dumps(invalid),
+                metadata={},
+                provider="test",
+                model_alias="architecture-primary",
+            ),
+            self.engine_result,
+        ]
+
+        self.agent.handle(self.task)
+
+        self.assertEqual(self.engine.run.call_count, 2)
+        retry_context = self.engine.run.call_args_list[1].kwargs["context"]
+        feedback = retry_context["architecture_validation_feedback"]
+        self.assertNotIn("previous_output", feedback)
+        self.assertIn(
+            "distinct declared modules",
+            feedback["validation_error"],
+        )
+        self.assertEqual(
+            feedback["invalid_relationship_snapshot"]["interfaces"],
+            [
+                {
+                    "name": "TaskResultReader",
+                    "provider": "backend",
+                    "consumers": ["backend"],
+                }
+            ],
+        )
+        topology = retry_context["architecture_generation_guidance"][
+            "recommended_full_stack_topology"
+        ]
+        self.assertEqual(
+            topology["declared_module_names"],
+            ["backend", "frontend"],
+        )
+        self.assertEqual(self.task.status, TaskStatus.COMPLETED)
 
     def test_empty_technical_constraints_do_not_require_input(self):
         self.project.technical_constraints = []

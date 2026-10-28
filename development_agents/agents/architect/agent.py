@@ -1,3 +1,4 @@
+import json
 from typing import Any
 
 from core.contracts.context import ContextProvider
@@ -46,7 +47,7 @@ PERSISTENCE_DECISION_KEYS = frozenset(
         "storage",
     }
 )
-MAX_ARCHITECTURE_ATTEMPTS = 3
+MAX_ARCHITECTURE_ATTEMPTS = 4
 
 
 class ArchitectAgent(TaskHandler):
@@ -118,17 +119,11 @@ class ArchitectAgent(TaskHandler):
                 except ArchitectureArtifactValidationError as error:
                     if attempt == MAX_ARCHITECTURE_ATTEMPTS:
                         raise
-                    validation_feedback = {
-                        "attempt": attempt,
-                        "validation_error": str(error),
-                        "previous_output": engine_result.output,
-                        "instruction": (
-                            "Return the complete corrected architecture. "
-                            "Preserve Project and functional specification "
-                            "authority exactly and change only what is needed "
-                            "to satisfy the validation error."
-                        ),
-                    }
+                    validation_feedback = self._validation_feedback(
+                        attempt,
+                        error,
+                        engine_result.output,
+                    )
             self._persist(task, engine_result, artifact)
             final_status = (
                 TaskStatus.NEEDS_INPUT
@@ -154,6 +149,9 @@ class ArchitectAgent(TaskHandler):
         context = {
             **self.context_provider.build(task, project),
             "output_contract": self._output_contract(project),
+            "architecture_generation_guidance": (
+                self._generation_guidance(project)
+            ),
         }
         if functional_contract is not None:
             context["functional_contract"] = functional_contract
@@ -198,6 +196,129 @@ class ArchitectAgent(TaskHandler):
                 "supported; architecture.json remains authoritative for how."
             ),
         }, []
+
+    @classmethod
+    def _generation_guidance(cls, project: Project) -> dict[str, Any]:
+        persistence_technologies = cls._persistence_technologies(project)
+        return {
+            "construction_order": [
+                "Declare the complete modules array first.",
+                (
+                    "Use only exact module.name values in dependencies, "
+                    "providers, consumers, persistence owned_by and "
+                    "execution_plan modules."
+                ),
+                "Add interfaces and APIs only between distinct modules.",
+                "Validate every reference against declared_module_names.",
+            ],
+            "recommended_full_stack_topology": {
+                "declared_module_names": ["backend", "frontend"],
+                "modules": [
+                    {"name": "backend", "dependencies": []},
+                    {"name": "frontend", "dependencies": ["backend"]},
+                ],
+                "cross_module_contracts": {
+                    "provider": "backend",
+                    "consumers": ["frontend"],
+                },
+                "persistence_owned_by": "backend",
+                "execution_order": ["backend", "frontend"],
+            },
+            "topology_policy": (
+                "Use the recommended two-module topology for an ordinary "
+                "backend/frontend feature. Add another logical module only "
+                "when Project or the functional specification explicitly "
+                "requires a separate responsibility. A module must never "
+                "depend on itself. A provider must never also be one of its "
+                "consumers. Technology, layer, store and interface names are "
+                "never module references."
+            ),
+            "persistence_technologies": persistence_technologies,
+            "completion_policy": (
+                "All Project technical fields are present. Return complete "
+                "unless the functional contract contains a genuinely "
+                "unresolved decision; do not invent missing decisions."
+            ),
+        }
+
+    @staticmethod
+    def _validation_feedback(
+        attempt: int,
+        error: ArchitectureArtifactValidationError,
+        raw_output: str,
+    ) -> dict[str, Any]:
+        relationships: dict[str, Any] = {}
+        try:
+            payload = json.loads(raw_output)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            payload = None
+        if isinstance(payload, dict):
+            modules = payload.get("modules")
+            if isinstance(modules, list):
+                relationships["modules"] = [
+                    {
+                        "name": module.get("name"),
+                        "dependencies": module.get("dependencies"),
+                    }
+                    for module in modules
+                    if isinstance(module, dict)
+                ]
+            for field_name in ("interfaces", "apis"):
+                contracts = payload.get(field_name)
+                if isinstance(contracts, list):
+                    relationships[field_name] = [
+                        {
+                            "name": contract.get("name"),
+                            "provider": contract.get("provider"),
+                            "consumers": contract.get("consumers"),
+                        }
+                        for contract in contracts
+                        if isinstance(contract, dict)
+                    ]
+            persistence = payload.get("persistence")
+            if isinstance(persistence, dict):
+                stores = persistence.get("stores")
+                if isinstance(stores, list):
+                    relationships["persistence_owners"] = [
+                        store.get("owned_by")
+                        for store in stores
+                        if isinstance(store, dict)
+                    ]
+            plan = payload.get("execution_plan")
+            if isinstance(plan, list):
+                relationships["execution_plan_modules"] = [
+                    step.get("modules")
+                    for step in plan
+                    if isinstance(step, dict)
+                ]
+        return {
+            "attempt": attempt,
+            "validation_error": str(error),
+            "invalid_relationship_snapshot": relationships,
+            "repair_checklist": [
+                (
+                    "Build declared_module_names from every modules[].name "
+                    "before writing any reference."
+                ),
+                (
+                    "Every dependency must be a different exact name from "
+                    "declared_module_names."
+                ),
+                (
+                    "Every interface/API provider and consumer must be a "
+                    "declared module, and provider cannot be a consumer."
+                ),
+                (
+                    "Every persistence owner and execution-plan module must "
+                    "be an exact declared module name."
+                ),
+            ],
+            "instruction": (
+                "Regenerate the entire JSON object from the authoritative "
+                "inputs. Correct the reported relationship before returning. "
+                "Do not copy an invalid reference and do not add fields."
+            ),
+        }
 
     def _persist(
         self,
