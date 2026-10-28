@@ -70,7 +70,7 @@ PLACEHOLDER_MARKERS = (
     "example usage",
     "replace with actual",
 )
-MAX_GENERATION_ATTEMPTS = 3
+MAX_GENERATION_ATTEMPTS = 4
 TYPESCRIPT_BUILD_PACKAGES = frozenset(
     {
         "@angular/cli",
@@ -200,18 +200,11 @@ class FrontendAgent(TaskHandler):
                 except FrontendGenerationValidationError as error:
                     if attempt == MAX_GENERATION_ATTEMPTS:
                         raise
-                    validation_feedback = {
-                        "attempt": attempt,
-                        "validation_error": str(error),
-                        "previous_output": engine_result.output,
-                        "instruction": (
-                            "Return the full corrected artifact. Preserve "
-                            "Project and architecture.json values exactly. "
-                            "Change only what is required by the validation "
-                            "error. Do not add packages, protocols, imports, "
-                            "symbols or files outside the contract."
-                        ),
-                    }
+                    validation_feedback = self._validation_feedback(
+                        project,
+                        attempt,
+                        error,
+                    )
             self._persist_result(task, engine_result, generation)
 
             if generation.status is FrontendGenerationStatus.NEEDS_INPUT:
@@ -407,6 +400,13 @@ class FrontendAgent(TaskHandler):
             "If a required decision is absent, return "
             "needs_input with no files."
         )
+        build_guidance = cls._build_guidance(project)
+        if build_guidance is not None:
+            contract["instruction"] += (
+                " For dependency-free JavaScript, use exactly the supplied "
+                "package.json build manifest and frontend/app.js entry path; "
+                "do not omit scripts.build."
+            )
         return contract
 
     @classmethod
@@ -458,6 +458,7 @@ class FrontendAgent(TaskHandler):
             "functional_contract": functional_contract,
             "frontend_requirements": cls._frontend_requirements(architecture),
             "authorized_dependencies": cls._declared_dependencies(project),
+            "build_contract": cls._build_guidance(project),
             "existing_files": [
                 {
                     "path": workspace_file.relative_path,
@@ -483,6 +484,53 @@ class FrontendAgent(TaskHandler):
                     "emit placeholders or illustrative pseudo-code."
                 ),
             ],
+        }
+
+    @classmethod
+    def _build_guidance(cls, project: Project) -> dict[str, Any] | None:
+        language = str(project.frontend_stack.get("language", "")).casefold()
+        if language not in {"javascript", "ecmascript"} or (
+            cls._declared_dependencies(project)
+        ):
+            return None
+        package = {
+            "type": "module",
+            "scripts": {"build": "node --check app.js"},
+            "dependencies": {},
+            "devDependencies": {},
+        }
+        return {
+            "package_path": "frontend/package.json",
+            "source_entry_path": "frontend/app.js",
+            "exact_package_json": json.dumps(
+                package,
+                separators=(",", ":"),
+                sort_keys=True,
+            ),
+            "required_build_command": "node --check app.js",
+        }
+
+    @classmethod
+    def _validation_feedback(
+        cls,
+        project: Project,
+        attempt: int,
+        error: FrontendGenerationValidationError,
+    ) -> dict[str, Any]:
+        build_contract = cls._build_guidance(project)
+        return {
+            "attempt": attempt,
+            "validation_error": str(error),
+            "authorized_dependencies": cls._declared_dependencies(project),
+            "required_build_contract": build_contract,
+            "instruction": (
+                "Regenerate the full corrected artifact rather than copying "
+                "the invalid files. Preserve Project and architecture.json "
+                "exactly. If required_build_contract is present, copy its "
+                "package path, source entry path and exact package JSON. Do "
+                "not add packages, protocols, imports, symbols or files "
+                "outside the contract."
+            ),
         }
 
     @staticmethod

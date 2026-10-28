@@ -72,7 +72,7 @@ PERSISTENCE_DEPENDENCY_KEYS = frozenset(
 )
 
 PLACEHOLDER_MARKERS = ("todo", "fixme", "placeholder")
-MAX_GENERATION_ATTEMPTS = 3
+MAX_GENERATION_ATTEMPTS = 4
 
 
 class BackendAgent(TaskHandler):
@@ -181,22 +181,11 @@ class BackendAgent(TaskHandler):
                 except BackendGenerationValidationError as error:
                     if attempt == MAX_GENERATION_ATTEMPTS:
                         raise
-                    validation_feedback = {
-                        "attempt": attempt,
-                        "validation_error": str(error),
-                        "previous_output": engine_result.output,
-                        "instruction": (
-                            "Return the full corrected artifact. Preserve "
-                            "Project and architecture values exactly and "
-                            "change only what is required to satisfy the "
-                            "validation error. Undefined names must be "
-                            "explicitly imported or defined in the same "
-                            "file. For nullable annotations use Python 3.12 "
-                            "union syntax instead of Optional. Never replace "
-                            "a missing symbol with an undeclared external "
-                            "package."
-                        ),
-                    }
+                    validation_feedback = self._validation_feedback(
+                        project,
+                        attempt,
+                        error,
+                    )
             self._persist_result(task, engine_result, generation)
 
             if generation.status is BackendGenerationStatus.NEEDS_INPUT:
@@ -414,6 +403,19 @@ class BackendAgent(TaskHandler):
             "required decision is absent, return needs_input with no files "
             "and empty implementation coverage."
         )
+        contract["instruction"] += (
+            " For every architecture API operation, source code must contain "
+            "the exact method and exact path as string literals and implement "
+            "the named operation; do not rename or prefix paths."
+        )
+        if not cls._declared_dependencies(project):
+            contract["instruction"] += (
+                " This Project authorizes zero external dependencies. HTTP "
+                "or API declarations describe a contract and do not authorize "
+                "a web framework. Generate only standard-library and internal "
+                "imports, model API operations as plain callable functions, "
+                "and never import FastAPI, Flask, Django or another package."
+            )
         return contract
 
     @classmethod
@@ -464,6 +466,21 @@ class BackendAgent(TaskHandler):
             "architecture_artifact": architecture.to_dict(),
             "functional_contract": functional_contract,
             "backend_requirements": cls._backend_requirements(architecture),
+            "api_literal_requirements": [
+                {
+                    "api": api["name"],
+                    "operation": operation["name"],
+                    "method_literal": operation["method"],
+                    "path_literal": operation["path"],
+                    "required_source_lines": cls._api_source_lines(
+                        operation
+                    ),
+                }
+                for api in architecture.apis
+                for operation in api["operations"]
+                if api["name"]
+                in cls._backend_requirements(architecture)["apis"]
+            ],
             "module_packages": {
                 module: f"backend/{_python_package_name(module)}"
                 for module in cls._backend_requirements(architecture)[
@@ -487,7 +504,8 @@ class BackendAgent(TaskHandler):
             str(project.backend_stack.get("language", "")).casefold()
             == "python"
         ):
-            implementation_context["python_generation_rules"] = [
+            authorized_dependencies = cls._declared_dependencies(project)
+            python_rules = [
                 (
                     "Represent domain data models with standard-library "
                     "dataclasses unless an alternative modeling package is "
@@ -502,23 +520,116 @@ class BackendAgent(TaskHandler):
                     "Import declared package names literally; when psycopg "
                     "is declared, use import psycopg and never psycopg2."
                 ),
-                (
-                    "Import every FastAPI symbol from fastapi in each Python "
-                    "file where that symbol is referenced."
-                ),
-                (
-                    "FastAPI route parameters may contain request data or "
-                    "dependencies declared with Depends. Never annotate a "
-                    "route parameter with a plain service class and default "
-                    "it to None; instantiate that service inside the route "
-                    "or inject it with Depends."
-                ),
-                (
-                    "Use Python 3.12 PEP 604 union syntax such as Task | "
-                    "None; never use typing.Optional."
-                ),
             ]
+            if "fastapi" in authorized_dependencies:
+                python_rules.extend(
+                    [
+                        (
+                            "Import every FastAPI symbol from fastapi in each "
+                            "Python file where that symbol is referenced."
+                        ),
+                        (
+                            "FastAPI route parameters may contain request "
+                            "data or dependencies declared with Depends. "
+                            "Never annotate a route parameter with a plain "
+                            "service class and default it to None; instantiate "
+                            "that service inside the route or inject it with "
+                            "Depends."
+                        ),
+                    ]
+                )
+            if not authorized_dependencies:
+                implementation_context["dependency_policy"] = {
+                    "mode": "standard_library_only",
+                    "allowed_external_imports": [],
+                    "api_strategy": (
+                        "Represent each declared HTTP operation with plain "
+                        "Python functions and method/path constants. Do not "
+                        "create a framework application or route decorator."
+                    ),
+                    "forbidden_framework_examples": [
+                        "fastapi",
+                        "flask",
+                        "django",
+                    ],
+                }
+                python_rules.append(
+                    "No external package is authorized. Use only Python's "
+                    "standard library and generated internal modules. Model "
+                    "the declared API as transport-neutral callable functions; "
+                    "do not import FastAPI, Flask or another web framework."
+                )
+            python_rules.append(
+                "Use Python 3.12 PEP 604 union syntax such as Task | None; "
+                "never use typing.Optional."
+            )
+            implementation_context["python_generation_rules"] = python_rules
         return implementation_context
+
+    @classmethod
+    def _validation_feedback(
+        cls,
+        project: Project,
+        attempt: int,
+        error: BackendGenerationValidationError,
+    ) -> dict[str, Any]:
+        authorized = cls._declared_dependencies(project)
+        dependency_repair = (
+            "Remove every import and use of the rejected external package. "
+            "Do not add it to dependencies. Implement the API contract with "
+            "plain Python functions and standard-library types."
+            if "undeclared or missing dependency" in str(error)
+            else (
+                "Use only imports whose roots are listed in authorized_"
+                "dependencies or generated internal modules."
+            )
+        )
+        api_repair = (
+            "Include the architecture method and path exactly as quoted "
+            "string literals in generated source and implement the declared "
+            "operation name. Do not add a prefix or substitute another path."
+            if "does not implement architecture API" in str(error)
+            else None
+        )
+        api_match = re.search(
+            r"architecture API:\s+(\S+)\s+(\S+)",
+            str(error),
+        )
+        api_required_source_lines = (
+            [
+                f'API_METHOD = "{api_match.group(1)}"',
+                f'API_PATH = "{api_match.group(2)}"',
+            ]
+            if api_match is not None
+            else []
+        )
+        return {
+            "attempt": attempt,
+            "validation_error": str(error),
+            "authorized_dependencies": authorized,
+            "dependency_repair": dependency_repair,
+            "api_repair": api_repair,
+            "api_required_source_lines": api_required_source_lines,
+            "instruction": (
+                "Regenerate the full corrected artifact rather than copying "
+                "the invalid source. Preserve Project and architecture values "
+                "exactly. Undefined names must be imported from an authorized "
+                "or generated module or defined locally. Use Python 3.12 PEP "
+                "604 union syntax instead of Optional."
+            ),
+        }
+
+    @staticmethod
+    def _api_source_lines(operation: dict[str, Any]) -> list[str]:
+        identifier = re.sub(
+            r"[^A-Za-z0-9]+",
+            "_",
+            operation["name"],
+        ).strip("_").upper()
+        return [
+            f'{identifier}_METHOD = "{operation["method"]}"',
+            f'{identifier}_PATH = "{operation["path"]}"',
+        ]
 
     @staticmethod
     def _validate_architecture_authority(

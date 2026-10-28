@@ -288,6 +288,21 @@ class FrontendAgentTests(unittest.TestCase):
             },
         )
         self.assertEqual(implementation["authorized_dependencies"], [])
+        self.assertEqual(
+            implementation["build_contract"]["required_build_command"],
+            "node --check app.js",
+        )
+        self.assertEqual(
+            json.loads(
+                implementation["build_contract"]["exact_package_json"]
+            ),
+            {
+                "type": "module",
+                "scripts": {"build": "node --check app.js"},
+                "dependencies": {},
+                "devDependencies": {},
+            },
+        )
         manifest = context["output_contract"]["properties"][
             "implementation"
         ]["properties"]
@@ -510,6 +525,13 @@ class FrontendAgentTests(unittest.TestCase):
             "frontend_validation_feedback"
         ]
         self.assertIn("placeholder", feedback["validation_error"])
+        self.assertNotIn("previous_output", feedback)
+        self.assertEqual(
+            feedback["required_build_contract"][
+                "required_build_command"
+            ],
+            "node --check app.js",
+        )
         self.task_result_writer.write.assert_called_once()
         self.workspace.write_files.assert_called_once()
         self.assertEqual(self.task.status, TaskStatus.COMPLETED)

@@ -302,9 +302,10 @@ class BackendAgentTests(unittest.TestCase):
         self.assertEqual(feedback["attempt"], 1)
         self.assertIn("unsafe path", feedback["validation_error"])
         self.assertEqual(
-            json.loads(feedback["previous_output"]),
-            invalid_output,
+            feedback["authorized_dependencies"],
+            ["fastapi", "psycopg"],
         )
+        self.assertNotIn("previous_output", feedback)
         self.task_result_writer.write.assert_called_once()
         self.workspace.write_files.assert_called_once()
         self.assertEqual(self.task.status, TaskStatus.COMPLETED)
@@ -330,6 +331,21 @@ class BackendAgentTests(unittest.TestCase):
         self.assertEqual(
             implementation["module_packages"],
             {"backend": "backend/backend"},
+        )
+        self.assertEqual(
+            implementation["api_literal_requirements"],
+            [
+                {
+                    "api": "project-api",
+                    "operation": "get_project",
+                    "method_literal": "GET",
+                    "path_literal": "/projects/{project_id}",
+                    "required_source_lines": [
+                        'GET_PROJECT_METHOD = "GET"',
+                        'GET_PROJECT_PATH = "/projects/{project_id}"',
+                    ],
+                }
+            ],
         )
         self.assertEqual(len(implementation["python_generation_rules"]), 6)
         self.assertIn(
@@ -364,6 +380,7 @@ class BackendAgentTests(unittest.TestCase):
             json.loads(requirements["backend_architecture"]),
             self.project.backend_architecture,
         )
+
         self.assertEqual(
             requirements["technical_constraints[0]"],
             "Apply all five SOLID principles",
@@ -413,6 +430,77 @@ class BackendAgentTests(unittest.TestCase):
         self.assertEqual(
             contract["files"]["items"]["properties"]["path"]["pattern"],
             r"^(?:backend/backend)/.+$",
+        )
+
+    def test_python_without_dependencies_forbids_framework_imports(self):
+        self.project.backend_stack = {
+            "language": "Python",
+            "dependencies": [],
+        }
+
+        implementation = self.agent._implementation_context(
+            self.project,
+            self.architecture,
+            None,
+            [],
+        )
+
+        rules = implementation["python_generation_rules"]
+        self.assertEqual(implementation["authorized_dependencies"], [])
+        self.assertTrue(
+            any("No external package is authorized" in rule for rule in rules)
+        )
+        self.assertTrue(
+            any("do not import FastAPI" in rule for rule in rules)
+        )
+        self.assertFalse(
+            any("FastAPI route parameters" in rule for rule in rules)
+        )
+        self.assertEqual(
+            implementation["dependency_policy"]["mode"],
+            "standard_library_only",
+        )
+        contract = self.agent._output_contract(
+            self.project,
+            self.architecture,
+        )
+        self.assertIn(
+            "HTTP or API declarations describe a contract",
+            contract["instruction"],
+        )
+
+    def test_dependency_retry_requires_removal_of_unauthorized_package(self):
+        self.project.backend_stack = {
+            "language": "Python",
+            "dependencies": [],
+        }
+        error = BackendGenerationValidationError(
+            "Backend source imports undeclared or missing dependency fastapi"
+        )
+
+        feedback = self.agent._validation_feedback(
+            self.project,
+            1,
+            error,
+        )
+
+        self.assertEqual(feedback["authorized_dependencies"], [])
+        self.assertIn("Remove every import", feedback["dependency_repair"])
+        self.assertIn("Do not add it", feedback["dependency_repair"])
+
+        api_feedback = self.agent._validation_feedback(
+            self.project,
+            2,
+            BackendGenerationValidationError(
+                "Backend output does not implement architecture API: "
+                "GET /status"
+            ),
+        )
+        self.assertIn("exactly", api_feedback["api_repair"])
+        self.assertIn("Do not add a prefix", api_feedback["api_repair"])
+        self.assertEqual(
+            api_feedback["api_required_source_lines"],
+            ['API_METHOD = "GET"', 'API_PATH = "/status"'],
         )
 
     def test_does_not_add_architectural_patterns_from_another_project(self):
@@ -655,7 +743,7 @@ class BackendAgentTests(unittest.TestCase):
         ):
             self.agent.handle(self.task)
 
-        self.assertEqual(self.engine.run.call_count, 3)
+        self.assertEqual(self.engine.run.call_count, 4)
         self.task_result_writer.write.assert_not_called()
         self.workspace.write_files.assert_not_called()
         self.assertEqual(self.task.status, TaskStatus.FAILED)

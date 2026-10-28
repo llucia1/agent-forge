@@ -200,6 +200,15 @@ class ArchitectAgent(TaskHandler):
     @classmethod
     def _generation_guidance(cls, project: Project) -> dict[str, Any]:
         persistence_technologies = cls._persistence_technologies(project)
+        persistence_policy = (
+            "Project declares no persistence technology. Return persistence "
+            "as the exact empty object {} and do not invent a store."
+            if not persistence_technologies
+            else (
+                "Define stores using every and only the authoritative "
+                "persistence technology."
+            )
+        )
         return {
             "construction_order": [
                 "Declare the complete modules array first.",
@@ -234,6 +243,7 @@ class ArchitectAgent(TaskHandler):
                 "never module references."
             ),
             "persistence_technologies": persistence_technologies,
+            "persistence_policy": persistence_policy,
             "completion_policy": (
                 "All Project technical fields are present. Return complete "
                 "unless the functional contract contains a genuinely "
@@ -279,6 +289,11 @@ class ArchitectAgent(TaskHandler):
             if isinstance(persistence, dict):
                 stores = persistence.get("stores")
                 if isinstance(stores, list):
+                    relationships["persistence_technologies"] = [
+                        store.get("technology")
+                        for store in stores
+                        if isinstance(store, dict)
+                    ]
                     relationships["persistence_owners"] = [
                         store.get("owned_by")
                         for store in stores
@@ -311,6 +326,10 @@ class ArchitectAgent(TaskHandler):
                 (
                     "Every persistence owner and execution-plan module must "
                     "be an exact declared module name."
+                ),
+                (
+                    "If authoritative persistence technologies is empty, "
+                    "persistence must be the exact empty object {}."
                 ),
             ],
             "instruction": (
@@ -401,6 +420,17 @@ class ArchitectAgent(TaskHandler):
         contract["authoritative_persistence_technologies"] = (
             cls._persistence_technologies(project)
         )
+        persistence_technologies = cls._persistence_technologies(project)
+        if not persistence_technologies:
+            properties["persistence"] = {
+                "type": "object",
+                "const": {},
+            }
+        else:
+            technology = properties["persistence"]["properties"]["stores"][
+                "items"
+            ]["properties"]["technology"]
+            technology["enum"] = persistence_technologies
         contract["instruction"] = (
             f"{contract['instruction']} Copy every authoritative technical "
             "field exactly. Do not add, replace or infer technologies, "

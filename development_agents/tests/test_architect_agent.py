@@ -311,6 +311,30 @@ class ArchitectAgentTests(unittest.TestCase):
         )
         self.assertEqual(self.task.status, TaskStatus.COMPLETED)
 
+    def test_output_contract_forbids_undeclared_persistence(self):
+        self.project.infrastructure = {"runtime": "Docker Compose"}
+
+        contract = self.agent._output_contract(self.project)
+        guidance = self.agent._generation_guidance(self.project)
+
+        self.assertEqual(
+            contract["properties"]["persistence"],
+            {"type": "object", "const": {}},
+        )
+        self.assertEqual(
+            guidance["persistence_technologies"],
+            [],
+        )
+        self.assertIn("exact empty object", guidance["persistence_policy"])
+
+    def test_output_contract_limits_declared_persistence_technology(self):
+        contract = self.agent._output_contract(self.project)
+
+        technology = contract["properties"]["persistence"]["properties"][
+            "stores"
+        ]["items"]["properties"]["technology"]
+        self.assertEqual(technology["enum"], ["PostgreSQL"])
+
     def test_empty_technical_constraints_do_not_require_input(self):
         self.project.technical_constraints = []
         self.architecture_output["technical_constraints"] = []
