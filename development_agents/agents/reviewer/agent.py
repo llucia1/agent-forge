@@ -1286,9 +1286,22 @@ def _inspect_contracts(
             connected = [api["provider"], *api["consumers"]]
             for module_name in connected:
                 source = module_sources.get(module_name, "")
+                contains_path = _source_contains_path(
+                    source, operation["path"]
+                )
                 valid = (
-                    _source_contains_method(source, operation["method"])
-                    and _source_contains_path(source, operation["path"])
+                    contains_path
+                    and (
+                        _source_contains_method(
+                            source, operation["method"]
+                        )
+                        or (
+                            operation["method"].casefold() == "get"
+                            and _source_contains_default_get_fetch(
+                                source, operation["path"]
+                            )
+                        )
+                    )
                 )
                 if valid:
                     continue
@@ -1407,6 +1420,20 @@ def _source_contains_method(source: str, method: str) -> bool:
         re.search(
             rf"(?:[\"']{normalized}[\"']|\.{normalized}\s*\(|"
             rf"\bmethod\s*[:=]\s*[\"']{normalized}[\"'])",
+            source,
+        )
+    )
+
+
+def _source_contains_default_get_fetch(
+    source: str,
+    declared_path: str,
+) -> bool:
+    """Recognize a browser fetch whose omitted method is HTTP GET."""
+    path = re.escape(declared_path.casefold())
+    return bool(
+        re.search(
+            rf"\bfetch\s*\(\s*([\"'`]){path}\1\s*\)",
             source,
         )
     )

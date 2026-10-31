@@ -147,12 +147,13 @@ class FrontendAgentTests(unittest.TestCase):
                 {
                     "path": "frontend/package.json",
                     "content": (
-                        '{"scripts":{"build":"node --check '
-                        'src/components/order-list.js"}}\n'
+                        '{"dependencies":{},"devDependencies":{},'
+                        '"scripts":{"build":"node --check app.js"},'
+                        '"type":"module"}'
                     ),
                 },
                 {
-                    "path": "frontend/src/components/order-list.js",
+                    "path": "frontend/app.js",
                     "content": (
                         "export async function read_project(project_id) {\n"
                         "  const path = '/projects/{project_id}'.replace("
@@ -228,7 +229,7 @@ class FrontendAgentTests(unittest.TestCase):
         expected_output = json.loads(json.dumps(self.generation_output))
         expected_output["implementation"]["file_modules"] = {
             "frontend/package.json": "frontend",
-            "frontend/src/components/order-list.js": "frontend",
+            "frontend/app.js": "frontend",
         }
         self.assertEqual(json.loads(persisted.output), expected_output)
         self.assertEqual(
@@ -316,6 +317,17 @@ class FrontendAgentTests(unittest.TestCase):
         self.assertEqual(
             manifest["file_modules"],
             {"type": "object", "const": {}},
+        )
+        package_file = context["output_contract"]["properties"][
+            "files"
+        ]["contains"]
+        self.assertEqual(
+            package_file["properties"]["path"]["const"],
+            "frontend/package.json",
+        )
+        self.assertEqual(
+            package_file["properties"]["content"]["const"],
+            implementation["build_contract"]["exact_package_json"],
         )
 
     def test_does_not_add_technologies_from_other_projects(self):
@@ -534,6 +546,34 @@ class FrontendAgentTests(unittest.TestCase):
         )
         self.task_result_writer.write.assert_called_once()
         self.workspace.write_files.assert_called_once()
+        self.assertEqual(self.task.status, TaskStatus.COMPLETED)
+
+    def test_retries_dependency_free_manifest_with_extra_fields(self):
+        invalid_output = self._generation_output()
+        invalid_output["files"][0]["content"] = (
+            '{"name":"unexpected","dependencies":{},'
+            '"devDependencies":{},"scripts":'
+            '{"build":"node --check app.js"},"type":"module"}'
+        )
+        self.engine.run.side_effect = [
+            EngineResult(
+                output=json.dumps(invalid_output),
+                metadata={"attempt": 1},
+                provider="litellm",
+            ),
+            self.engine_result,
+        ]
+
+        self.agent.handle(self.task)
+
+        self.assertEqual(self.engine.run.call_count, 2)
+        feedback = self.engine.run.call_args.kwargs["context"][
+            "frontend_validation_feedback"
+        ]
+        self.assertIn(
+            "required dependency-free build manifest",
+            feedback["validation_error"],
+        )
         self.assertEqual(self.task.status, TaskStatus.COMPLETED)
 
     def test_accepts_runtime_substitution_of_api_path_parameter(self):

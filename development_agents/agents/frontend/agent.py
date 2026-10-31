@@ -380,6 +380,23 @@ class FrontendAgent(TaskHandler):
             "type": "string",
             "minLength": 1,
         }
+        build_guidance = cls._build_guidance(project)
+        if build_guidance is not None:
+            properties["files"]["contains"] = {
+                "type": "object",
+                "required": ["path", "content"],
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "const": build_guidance["package_path"],
+                    },
+                    "content": {
+                        "type": "string",
+                        "const": build_guidance["exact_package_json"],
+                    },
+                },
+                "additionalProperties": False,
+            }
 
         contract["instruction"] = (
             f"{contract['instruction']} The Project and validated "
@@ -400,12 +417,13 @@ class FrontendAgent(TaskHandler):
             "If a required decision is absent, return "
             "needs_input with no files."
         )
-        build_guidance = cls._build_guidance(project)
         if build_guidance is not None:
             contract["instruction"] += (
                 " For dependency-free JavaScript, use exactly the supplied "
                 "package.json build manifest and frontend/app.js entry path; "
-                "do not omit scripts.build."
+                "do not omit scripts.build. Source files must use browser "
+                "globals and relative imports only; package imports are "
+                "forbidden."
             )
         return contract
 
@@ -529,7 +547,10 @@ class FrontendAgent(TaskHandler):
                 "exactly. If required_build_contract is present, copy its "
                 "package path, source entry path and exact package JSON. Do "
                 "not add packages, protocols, imports, symbols or files "
-                "outside the contract."
+                "outside the contract. When authorized_dependencies is "
+                "empty, use only browser globals and relative source "
+                "imports; package imports and package manifest entries are "
+                "forbidden."
             ),
         }
 
@@ -681,6 +702,7 @@ class FrontendAgent(TaskHandler):
             combined_files,
             generated_paths,
             authorized,
+            cls._build_guidance(project),
         )
 
         source = "\n".join(
@@ -818,6 +840,7 @@ def _validate_frontend_workspace(
     files: dict[str, WorkspaceFile],
     generated_paths: set[str],
     authorized_dependencies: set[str],
+    build_guidance: dict[str, Any] | None,
 ) -> None:
     package_file = files.get("frontend/package.json")
     if package_file is None:
@@ -837,6 +860,15 @@ def _validate_frontend_workspace(
         raise FrontendGenerationValidationError(
             "Frontend package.json must be an object"
         )
+    if build_guidance is not None:
+        required_package = json.loads(
+            build_guidance["exact_package_json"]
+        )
+        if package != required_package:
+            raise FrontendGenerationValidationError(
+                "Frontend package.json does not match the required "
+                "dependency-free build manifest"
+            )
     scripts = package.get("scripts")
     if (
         not isinstance(scripts, dict)

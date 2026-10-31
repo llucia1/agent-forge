@@ -402,6 +402,27 @@ class ReviewerAgentTests(unittest.TestCase):
             {finding.id for finding in findings},
         )
 
+    def test_browser_fetch_without_method_is_a_valid_get_operation(self):
+        self.workspace_files[2] = WorkspaceFile(
+            "frontend/src/app.js",
+            (
+                "export async function get_project() {\n"
+                '  return fetch("/projects/{project_id}");\n'
+                "}\n"
+            ),
+        )
+
+        findings = ReviewerAgent._inspect_workspace(
+            self.project,
+            self.architecture,
+            self.workspace_files,
+        )
+
+        self.assertNotIn(
+            "REV-API-project-api-get-project-frontend",
+            {finding.id for finding in findings},
+        )
+
     def test_detects_missing_persistence_model(self):
         self.architecture = self._architecture(
             persistence={
